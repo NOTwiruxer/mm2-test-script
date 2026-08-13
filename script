@@ -1,42 +1,45 @@
--- SWILL | Murder Mystery 2 - Auto Coin Collector (Pure Object-Based)
--- Версия 2.0 | Без лицензий, без мусора
+-- SWILL | Murder Mystery 2 - Teleport Coin Collector
+-- Версия 3.0 | Телепорт вместо кликов
+-- Для Delta Executor на телефоне
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Camera = workspace.CurrentCamera
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ===== НАСТРОЙКИ =====
 local CONFIG = {
-    ClickCooldown = 0.12,          -- Задержка между кликами
-    MaxCollectRadius = 250,        -- Радиус сбора
-    AutoRotateSpeed = 2.5,         -- Скорость поворота камеры (градусы/кадр)
+    TeleportRadius = 300,          -- Радиус поиска монет (больше = дальше телепорт)
+    TeleportCooldown = 0.3,        -- Задержка между телепортами (сек)
     CheckInterval = 0.05,          -- Интервал проверки
+    SafeTeleport = true,           -- Телепортироваться только к видимым монетам
 }
 
 -- ===== ПЕРЕМЕННЫЕ =====
-local lastClick = 0
 local totalCollected = 0
 local running = true
+local lastTeleport = 0
+local character = nil
+local humanoidRootPart = nil
 
 -- ===== ПОИСК КОНТЕЙНЕРА С МОНЕТАМИ =====
 local function getCoinContainer()
-    -- Проверяем все возможные места хранения монет
-    local possiblePaths = {
+    -- Проверяем все возможные места
+    local paths = {
         workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Coins"),
         workspace:FindFirstChild("Coins"),
         workspace:FindFirstChild("CoinContainer"),
         workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Coins"),
+        workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Coin"),
     }
     
-    for _, container in pairs(possiblePaths) do
-        if container and container:IsA("Folder") then
+    for _, container in pairs(paths) do
+        if container then
             return container
         end
     end
     
-    -- Если не нашли по именам, ищем вручную
+    -- Ручной поиск
     for _, child in pairs(workspace:GetChildren()) do
         if child:IsA("Folder") and child.Name:lower():find("coin") then
             return child
@@ -49,120 +52,154 @@ local function getCoinContainer()
     return nil
 end
 
--- ===== ПОИСК БЛИЖАЙШЕЙ МОНЕТЫ =====
-local function findNearestCoin()
-    local character = LocalPlayer.Character
-    if not character then return nil end
+-- ===== ПОЛУЧИТЬ ВСЕ МОНЕТЫ =====
+local function getAllCoins()
+    local coins = {}
+    local container = getCoinContainer()
     
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return nil end
+    if not container then
+        return coins
+    end
     
-    local rootPos = rootPart.Position
-    local nearest = nil
-    local nearestDist = CONFIG.MaxCollectRadius
-    
-    local coinContainer = getCoinContainer()
-    if not coinContainer then return nil end
-    
-    -- Проходим по всем монетам в контейнере
-    for _, coinModel in pairs(coinContainer:GetChildren()) do
-        if coinModel:IsA("Model") and coinModel.Name == "Coin" then
-            -- Ищем Handle (кликабельную часть)
-            local handle = coinModel:FindFirstChild("Handle")
+    for _, child in pairs(container:GetChildren()) do
+        if child:IsA("Model") and child.Name == "Coin" then
+            local handle = child:FindFirstChild("Handle")
             if not handle then
-                -- Если Handle нет, берём любую часть
-                handle = coinModel:FindFirstChildWhichIsA("BasePart")
+                handle = child:FindFirstChildWhichIsA("BasePart")
             end
-            
             if handle and handle:IsA("BasePart") then
-                local pos = handle.Position
-                local dist = (pos - rootPos).Magnitude
-                
-                -- Проверяем, существует ли монета (не собрана)
-                if dist < nearestDist and handle.Transparency < 1 then
-                    nearest = handle
-                    nearestDist = dist
+                -- Проверяем, что монета существует (не прозрачна и не собрана)
+                if handle.Transparency < 0.9 then
+                    table.insert(coins, handle)
                 end
             end
+        end
+    end
+    
+    return coins
+end
+
+-- ===== ПОИСК БЛИЖАЙШЕЙ МОНЕТЫ =====
+local function findNearestCoin()
+    if not character or not humanoidRootPart then
+        return nil
+    end
+    
+    local rootPos = humanoidRootPart.Position
+    local nearest = nil
+    local nearestDist = CONFIG.TeleportRadius
+    
+    local allCoins = getAllCoins()
+    
+    for _, coin in pairs(allCoins) do
+        local pos = coin.Position
+        local dist = (pos - rootPos).Magnitude
+        if dist < nearestDist then
+            nearest = coin
+            nearestDist = dist
         end
     end
     
     return nearest, nearestDist
 end
 
--- ===== КЛИК ПО МОНЕТЕ =====
-local function clickCoin(screenPos)
-    if tick() - lastClick < CONFIG.ClickCooldown then
-        return
+-- ===== ТЕЛЕПОРТ К МОНЕТЕ =====
+local function teleportToCoin(coin)
+    if not character or not humanoidRootPart then
+        return false
     end
     
-    -- Эмуляция клика мыши
-    UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, true)
-    task.wait(0.04)
-    UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, false)
+    if tick() - lastTeleport < CONFIG.TeleportCooldown then
+        return false
+    end
     
-    lastClick = tick()
+    local coinPos = coin.Position
+    
+    -- Проверяем, не телепортируемся ли мы в стену
+    if CONFIG.SafeTeleport then
+        -- Добавляем небольшое смещение вверх, чтобы не застрять
+        coinPos = coinPos + Vector3.new(0, 2, 0)
+    end
+    
+    -- ТЕЛЕПОРТАЦИЯ
+    humanoidRootPart.CFrame = CFrame.new(coinPos)
+    
+    lastTeleport = tick()
     totalCollected = totalCollected + 1
     
-    -- Выводим счётчик в консоль
     if totalCollected % 5 == 0 then
         print("[SWILL] Собрано монет: " .. totalCollected)
     end
+    
+    return true
 end
 
--- ===== ПОВОРОТ КАМЕРЫ =====
-local function rotateToPosition(targetPos)
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-    
-    local rootPos = rootPart.Position
-    local direction = (targetPos - rootPos).Unit
-    local lookVector = Camera.CFrame.LookVector
-    
-    local angle = math.atan2(direction.X, direction.Z) - math.atan2(lookVector.X, lookVector.Z)
-    local newCFrame = Camera.CFrame * CFrame.Angles(0, angle, 0)
-    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, 0.15)
+-- ===== ОБНОВЛЕНИЕ ССЫЛОК НА ПЕРСОНАЖА =====
+local function updateCharacter()
+    character = LocalPlayer.Character
+    if character then
+        humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+        return true
+    end
+    return false
 end
 
 -- ===== ОСНОВНОЙ ЦИКЛ СБОРА =====
 local function collectLoop()
-    print("[SWILL] Автосбор монет запущен")
-    print("[SWILL] Ищем контейнер с монетами...")
+    print("[SWILL] Автосбор с телепортацией запущен")
+    print("[SWILL] Поиск контейнера с монетами...")
     
+    -- Проверяем контейнер
     local container = getCoinContainer()
     if container then
         print("[SWILL] Найден контейнер: " .. container:GetFullName())
+        print("[SWILL] Монет найдено: " .. #getAllCoins())
     else
-        print("[SWILL] Контейнер не найден! Проверяем весь workspace...")
+        print("[SWILL] Контейнер не найден! Ищем вручную...")
     end
+    
+    -- Ждём появления персонажа
+    while not updateCharacter() do
+        task.wait(0.5)
+    end
+    
+    print("[SWILL] Персонаж загружен. Начинаем сбор!")
     
     while running do
         task.wait(CONFIG.CheckInterval)
         
-        -- Проверка: жив ли игрок
-        if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Humanoid") then
+        -- Обновляем персонажа
+        if not updateCharacter() then
+            task.wait(1)
             continue
         end
         
+        -- Проверка: жив ли игрок
+        local humanoid = character:FindFirstChild("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then
+            task.wait(1)
+            continue
+        end
+        
+        -- Ищем ближайшую монету
         local coin, dist = findNearestCoin()
         
         if coin then
-            -- Переводим 3D-позицию в экранные координаты
-            local screenPos, onScreen = Camera:WorldToViewportPoint(coin.Position)
-            
-            if onScreen and screenPos.Z > 0 then
-                -- Монета на экране — кликаем
-                clickCoin(Vector2.new(screenPos.X, screenPos.Y))
-            else
-                -- Монета вне экрана — поворачиваем камеру
-                rotateToPosition(coin.Position)
-            end
+            -- Телепортируемся к монете
+            teleportToCoin(coin)
         else
-            -- Монет нет в радиусе — медленно вращаем камеру для поиска
-            Camera.CFrame = Camera.CFrame * CFrame.Angles(0, math.rad(CONFIG.AutoRotateSpeed), 0)
+            -- Если монет нет в радиусе, расширяем поиск
+            if CONFIG.TeleportRadius < 1000 then
+                CONFIG.TeleportRadius = CONFIG.TeleportRadius + 50
+                if CONFIG.TeleportRadius % 200 == 0 then
+                    print("[SWILL] Расширяем радиус поиска до " .. CONFIG.TeleportRadius)
+                end
+            else
+                -- Если всё равно нет монет, сбрасываем радиус
+                CONFIG.TeleportRadius = 300
+                print("[SWILL] Монет не найдено. Ожидание новых...")
+                task.wait(2)
+            end
         end
     end
 end
@@ -175,12 +212,12 @@ local function createGUI()
     local CloseButton = Instance.new("TextButton")
     
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-    ScreenGui.Name = "SWILL_CoinCollector"
+    ScreenGui.Name = "SWILL_TeleportCollector"
     
     Frame.Parent = ScreenGui
     Frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
     Frame.BackgroundTransparency = 0.6
-    Frame.Size = UDim2.new(0, 200, 0, 40)
+    Frame.Size = UDim2.new(0, 220, 0, 50)
     Frame.Position = UDim2.new(0, 10, 0, 10)
     Frame.BorderSizePixel = 0
     
@@ -217,6 +254,35 @@ local function createGUI()
     end)
 end
 
+-- ===== ДИАГНОСТИКА =====
+local function diagnostics()
+    task.wait(2)
+    print("[SWILL] ===== ДИАГНОСТИКА =====")
+    print("[SWILL] Проверяем структуру workspace...")
+    
+    for _, child in pairs(workspace:GetChildren()) do
+        print("[SWILL] " .. child.Name .. " (" .. child.ClassName .. ")")
+        if child:IsA("Folder") or child:IsA("Model") then
+            for _, sub in pairs(child:GetChildren()) do
+                if sub.Name:lower():find("coin") then
+                    print("[SWILL]   --> Найдено: " .. sub.Name)
+                end
+            end
+        end
+    end
+    
+    local container = getCoinContainer()
+    if container then
+        print("[SWILL] Контейнер найден: " .. container:GetFullName())
+        print("[SWILL] Количество монет: " .. #getAllCoins())
+    else
+        print("[SWILL] Контейнер НЕ НАЙДЕН!")
+        print("[SWILL] Попробуйте найти папку с монетами вручную")
+        print("[SWILL] И изменить функцию getCoinContainer()")
+    end
+    print("[SWILL] ==========================")
+end
+
 -- ===== ЗАПУСК =====
 task.spawn(function()
     -- Ждём загрузки игрока
@@ -224,9 +290,15 @@ task.spawn(function()
         task.wait(0.5)
     end
     
+    -- Запускаем диагностику
+    diagnostics()
+    
+    -- Создаём GUI
     createGUI()
+    
+    -- Запускаем сбор
     collectLoop()
 end)
 
-print("[SWILL] Скрипт загружен. Идёт сбор монет...")
+print("[SWILL] Скрипт загружен. Телепорт к монетам активирован!")
 print("[SWILL] Нажми X на GUI для остановки")
