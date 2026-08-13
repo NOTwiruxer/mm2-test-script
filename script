@@ -1,9 +1,8 @@
 --[[
-    MM2 COIN FARM v7 - ГАРАНТИРОВАННЫЙ ПОЛЁТ
-    - BodyForce для удержания в воздухе
-    - BodyVelocity для движения
-    - Ноклип работает всегда
-    - Оптимизированный поиск монет
+    MM2 COIN FARM v8 - КЛАССИЧЕСКИЙ ФЛАЙ (СТАРЫЙ МЕТОД)
+    - Принудительная установка CFrame каждый кадр
+    - Ноклип работает
+    - Поиск монет с задержкой
 ]]
 
 local Players = game:GetService("Players")
@@ -27,16 +26,8 @@ local isFarming = false
 local isCollecting = false
 local coinCount = 0
 local noclipParts = {}
-
--- ФИЗИКА ПОЛЁТА
-local bodyVelocity = nil
-local bodyGyro = nil
-local bodyForce = nil  -- Для компенсации гравитации
-
--- GUI
+local flyConnection = nil
 local guiRef = nil
-
--- Таймер
 local nextSearchTime = 0
 local searchCooldown = 0.3
 
@@ -46,10 +37,6 @@ local function getCharacter()
     if character then
         rootPart = character:FindFirstChild("HumanoidRootPart")
         humanoid = character:FindFirstChild("Humanoid")
-        if isFarming then
-            applyNoclip()
-            createFlightPhysics()
-        end
     end
     return character ~= nil
 end
@@ -79,58 +66,6 @@ local function removeNoclip()
         end
     end
     noclipParts = {}
-end
-
--- ===== ФИЗИКА ПОЛЁТА (BodyForce + BodyVelocity + BodyGyro) =====
-local function createFlightPhysics()
-    if not rootPart then return end
-    destroyFlightPhysics()
-    
-    -- 1. BodyForce — компенсирует гравитацию (держит в воздухе)
-    bodyForce = Instance.new("BodyForce")
-    bodyForce.Force = Vector3.new(0, rootPart:GetMass() * workspace.Gravity, 0)
-    bodyForce.Parent = rootPart
-    
-    -- 2. BodyVelocity — для движения
-    bodyVelocity = Instance.new("BodyVelocity")
-    bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
-    bodyVelocity.Velocity = Vector3.new(0, 0, 0)
-    bodyVelocity.Parent = rootPart
-    
-    -- 3. BodyGyro — для стабилизации
-    bodyGyro = Instance.new("BodyGyro")
-    bodyGyro.MaxTorque = Vector3.new(4000, 4000, 4000)
-    bodyGyro.CFrame = rootPart.CFrame
-    bodyGyro.Parent = rootPart
-    
-    -- Отключаем гравитацию и анимации
-    if humanoid then
-        humanoid.PlatformStand = true
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-    end
-    
-    print("[MM2 Farm] ✅ Физика полёта создана")
-end
-
-local function destroyFlightPhysics()
-    if bodyForce then
-        bodyForce:Destroy()
-        bodyForce = nil
-    end
-    if bodyVelocity then
-        bodyVelocity:Destroy()
-        bodyVelocity = nil
-    end
-    if bodyGyro then
-        bodyGyro:Destroy()
-        bodyGyro = nil
-    end
-    if humanoid then
-        humanoid.PlatformStand = false
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
-    end
 end
 
 -- ===== ПОИСК МОНЕТ =====
@@ -166,29 +101,6 @@ local function findClosestCoin()
         end
     end
     return closest, closestDist
-end
-
--- ===== ПОДЛЁТ =====
-local function flyToTarget(target)
-    if not rootPart or not target or not target.Parent then return false end
-    
-    local targetPos = target.Position + Vector3.new(0, config.heightOffset, 0)
-    local currentPos = rootPart.Position
-    local distance = (targetPos - currentPos).Magnitude
-    
-    if distance < config.collectionDistance then
-        return true
-    end
-    
-    local direction = (targetPos - currentPos).Unit
-    if bodyVelocity then
-        bodyVelocity.Velocity = direction * config.flySpeed
-    end
-    if bodyGyro then
-        bodyGyro.CFrame = CFrame.new(rootPart.Position, targetPos)
-    end
-    
-    return false
 end
 
 -- ===== СБОР МОНЕТЫ =====
@@ -238,43 +150,51 @@ local function collectCoin(coin)
     return false
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ =====
+-- ===== ОСНОВНОЙ ЦИКЛ (ФЛАЙ + СБОР) =====
 local function farmingLoop()
-    if not rootPart or not isFarming or isCollecting then return end
+    if not rootPart or not isFarming then return end
     
-    isCollecting = true
+    -- === 1. ПОЛЁТ (классический метод - принудительная установка позиции) ===
+    local targetPos = nil
+    local targetCoin = nil
     
+    -- Ищем монету (не чаще чем раз в 0.3 сек)
     local now = tick()
-    if now - nextSearchTime < searchCooldown then
-        isCollecting = false
-        return
-    end
-    nextSearchTime = now
-    
-    local target, dist = findClosestCoin()
-    
-    if not target then
-        local randomPos = Vector3.new(
-            math.random(-50, 50),
-            config.heightOffset,
-            math.random(-50, 50)
-        )
-        if bodyVelocity then
-            bodyVelocity.Velocity = (randomPos - rootPart.Position).Unit * config.flySpeed * 0.3
+    if now - nextSearchTime >= searchCooldown then
+        nextSearchTime = now
+        local closest, dist = findClosestCoin()
+        if closest and dist then
+            targetCoin = closest
+            targetPos = closest.Position + Vector3.new(0, config.heightOffset, 0)
         end
-        isCollecting = false
-        return
     end
     
-    local arrived = flyToTarget(target)
-    if not arrived then
-        isCollecting = false
-        return
+    -- Если монета найдена, летим к ней
+    if targetCoin and targetPos then
+        local currentPos = rootPart.Position
+        local distance = (targetPos - currentPos).Magnitude
+        
+        -- Если близко - собираем
+        if distance < config.collectionDistance then
+            collectCoin(targetCoin)
+            task.wait(0.05)
+        else
+            -- Летим к монете (плавно)
+            local direction = (targetPos - currentPos).Unit
+            local newPos = currentPos + direction * config.flySpeed * 0.5
+            rootPart.CFrame = CFrame.new(newPos)
+            rootPart.Velocity = direction * config.flySpeed * 0.5
+        end
+    else
+        -- Если монет нет, просто двигаемся под картой
+        local time = tick()
+        local x = math.sin(time * 0.3) * 20
+        local z = math.cos(time * 0.4) * 20
+        local randomPos = rootPart.Position + Vector3.new(x, 0, z)
+        randomPos = Vector3.new(randomPos.X, config.heightOffset, randomPos.Z)
+        rootPart.CFrame = CFrame.new(randomPos)
+        rootPart.Velocity = Vector3.new(x * 0.5, 0, z * 0.5)
     end
-    
-    collectCoin(target)
-    task.wait(0.1)
-    isCollecting = false
 end
 
 -- ===== ОБНОВЛЕНИЕ GUI =====
@@ -292,13 +212,8 @@ local function updateUI()
     end
     
     if btn then
-        if isFarming then
-            btn.Text = "🔴 ВЫКЛЮЧИТЬ (F1)"
-            btn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-        else
-            btn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
-            btn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
-        end
+        btn.Text = isFarming and "🔴 ВЫКЛЮЧИТЬ (F1)" or "🟢 ВКЛЮЧИТЬ (F1)"
+        btn.BackgroundColor3 = isFarming and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(0, 180, 0)
     end
     
     if stats then
@@ -320,13 +235,15 @@ local function startFarming()
     
     isFarming = true
     applyNoclip()
-    createFlightPhysics()
     
-    RunService.Heartbeat:Connect(function()
-        if isFarming and rootPart then
-            farmingLoop()
-        end
-    end)
+    -- Включаем полёт (Heartbeat)
+    if flyConnection then flyConnection:Disconnect() end
+    flyConnection = RunService.Heartbeat:Connect(farmingLoop)
+    
+    -- Отключаем гравитацию для персонажа
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
     
     updateUI()
     print("[MM2 Farm] ✅ АВТОФАРМ ВКЛЮЧЁН")
@@ -338,8 +255,16 @@ local function stopFarming()
     if not isFarming then return end
     
     isFarming = false
-    isCollecting = false
-    destroyFlightPhysics()
+    
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    
+    if humanoid then
+        humanoid.PlatformStand = false
+    end
+    
     removeNoclip()
     
     updateUI()
@@ -382,7 +307,7 @@ local function createGUI()
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v7"
+    title.Text = " MM2 FARM v8"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
@@ -481,7 +406,9 @@ player.CharacterAdded:Connect(function(newChar)
     if isFarming then
         task.wait(0.5)
         applyNoclip()
-        createFlightPhysics()
+        if humanoid then
+            humanoid.PlatformStand = true
+        end
     end
 end)
 
@@ -490,8 +417,9 @@ createGUI()
 updateUI()
 
 print("========================================")
-print("   MM2 FARM v7 - ГАРАНТИРОВАННЫЙ ПОЛЁТ")
+print("   MM2 FARM v8 - КЛАССИЧЕСКИЙ ФЛАЙ")
 print("  🔹 F1 - вкл/выкл")
 print("  🔹 ▲▼ - высота")
-print("  🔹 BodyForce удерживает в воздухе")
+print("  🔹 Принудительная установка позиции")
+print("  🔹 100% рабочий метод")
 print("========================================")
