@@ -1,20 +1,18 @@
 --[[
-    MM2 COIN FARM v5 - НОКЛИП ИСПРАВЛЕН + ОПТИМИЗАЦИЯ
-    - Ноклип работает всегда
-    - Поиск монет ТОЛЬКО при сборе (не каждый кадр)
+    MM2 COIN FARM v6 - СТАТУС ИСПРАВЛЕН + НЕТ РЕГДОЛЛА
+    - GUI обновляется всегда
+    - Персонаж НЕ падает (анти-регдолл)
     - Плавный полёт
-    - Минимум нагрузки
+    - Оптимизированный поиск монет
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CollectionService = game:GetService("CollectionService")
 local player = Players.LocalPlayer
 
 -- ===== НАСТРОЙКИ =====
 local config = {
-    enabled = false,
     heightOffset = -6,
     collectionDistance = 8,
     flySpeed = 40,
@@ -29,24 +27,47 @@ local isFarming = false
 local isCollecting = false
 local coinCount = 0
 local noclipParts = {}
+
+-- ФИЗИКА ПОЛЁТА
 local bodyVelocity = nil
 local bodyGyro = nil
-local currentTarget = nil
-local nextSearchTime = 0
-local searchCooldown = 0.3 -- Поиск монет не чаще чем раз в 0.3 сек
 
--- ===== ФУНКЦИЯ НОКЛИПА (РАБОТАЕТ ВСЕГДА) =====
+-- GUI
+local guiRef = nil
+local statusRef = nil
+local buttonRef = nil
+local statsRef = nil
+local heightRef = nil
+
+-- Таймер для поиска монет
+local nextSearchTime = 0
+local searchCooldown = 0.3
+
+-- ===== ПОЛУЧЕНИЕ ПЕРСОНАЖА =====
+local function getCharacter()
+    character = player.Character
+    if character then
+        rootPart = character:FindFirstChild("HumanoidRootPart")
+        humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = true
+        end
+        if isFarming then
+            applyNoclip()
+            createFlightPhysics()
+        end
+    end
+    return character ~= nil
+end
+
+-- ===== НОКЛИП =====
 local function applyNoclip()
     if not character then return end
-    
-    -- Отключаем коллизию у ВСЕХ частей персонажа
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
         end
     end
-    
-    -- Сохраняем части для восстановления
     noclipParts = {}
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
@@ -66,37 +87,27 @@ local function removeNoclip()
     noclipParts = {}
 end
 
--- ===== ПОЛУЧЕНИЕ ПЕРСОНАЖА =====
-local function getCharacter()
-    character = player.Character
-    if character then
-        rootPart = character:FindFirstChild("HumanoidRootPart")
-        humanoid = character:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.PlatformStand = true
-        end
-        -- Применяем ноклип сразу
-        if isFarming then
-            applyNoclip()
-        end
-    end
-    return character ~= nil
-end
-
--- ===== ФИЗИКА ПОЛЁТА =====
+-- ===== СОЗДАНИЕ ФИЗИКИ ПОЛЁТА (АНТИ-РЕГДОЛЛ) =====
 local function createFlightPhysics()
     if not rootPart then return end
     destroyFlightPhysics()
     
+    -- BodyVelocity для движения
     bodyVelocity = Instance.new("BodyVelocity")
     bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
     bodyVelocity.Velocity = Vector3.new(0, 0, 0)
     bodyVelocity.Parent = rootPart
     
+    -- BodyGyro для стабилизации
     bodyGyro = Instance.new("BodyGyro")
     bodyGyro.MaxTorque = Vector3.new(4000, 4000, 4000)
     bodyGyro.CFrame = rootPart.CFrame
     bodyGyro.Parent = rootPart
+    
+    -- Включаем PlatformStand, чтобы персонаж не падал
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
 end
 
 local function destroyFlightPhysics()
@@ -113,10 +124,9 @@ local function destroyFlightPhysics()
     end
 end
 
--- ===== ПОИСК МОНЕТ (ОПТИМИЗИРОВАННЫЙ) =====
+-- ===== ПОИСК МОНЕТ =====
 local function findCoins()
     local coins = {}
-    -- Используем CollectionService для быстрого поиска
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("BasePart") and obj.Parent then
             local name = obj.Name:lower()
@@ -130,7 +140,6 @@ end
 
 local function findClosestCoin()
     if not rootPart then return nil end
-    
     local coins = findCoins()
     if #coins == 0 then return nil end
     
@@ -147,7 +156,6 @@ local function findClosestCoin()
             end
         end
     end
-    
     return closest, closestDist
 end
 
@@ -180,7 +188,6 @@ local function collectCoin(coin)
     
     local success = false
     pcall(function()
-        -- Способ 1: ClickDetector
         local clickDet = coin:FindFirstChild("ClickDetector")
         if clickDet and clickDet:IsA("ClickDetector") then
             clickDet:FireClick(player.Mouse)
@@ -188,7 +195,6 @@ local function collectCoin(coin)
             return
         end
         
-        -- Способ 2: RemoteEvent
         local remote = coin:FindFirstChild("RemoteEvent") or coin:FindFirstChild("CollectEvent")
         if remote and remote:IsA("RemoteEvent") then
             remote:FireServer(player)
@@ -196,7 +202,6 @@ local function collectCoin(coin)
             return
         end
         
-        -- Способ 3: Эмуляция касания
         local fakePart = Instance.new("Part")
         fakePart.CanCollide = false
         fakePart.Transparency = 1
@@ -224,13 +229,12 @@ local function collectCoin(coin)
     return false
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ (ВЫЗЫВАЕТСЯ РЕДКО) =====
+-- ===== ОСНОВНОЙ ЦИКЛ =====
 local function farmingLoop()
     if not rootPart or not isFarming or isCollecting then return end
     
     isCollecting = true
     
-    -- Поиск монеты (с кд, чтобы не спамить)
     local now = tick()
     if now - nextSearchTime < searchCooldown then
         isCollecting = false
@@ -241,7 +245,6 @@ local function farmingLoop()
     local target, dist = findClosestCoin()
     
     if not target then
-        -- Нет монет — летим в случайную точку
         local randomPos = Vector3.new(
             math.random(-50, 50),
             config.heightOffset,
@@ -254,21 +257,53 @@ local function farmingLoop()
         return
     end
     
-    -- Летим к монете
     local arrived = flyToTarget(target)
     if not arrived then
         isCollecting = false
         return
     end
     
-    -- Собираем
-    local collected = collectCoin(target)
-    if collected then
-        print("[MM2 Farm] 🪙 +1 (" .. coinCount .. ")")
-        task.wait(0.1)
+    collectCoin(target)
+    task.wait(0.1)
+    isCollecting = false
+end
+
+-- ===== ОБНОВЛЕНИЕ GUI =====
+local function updateUI()
+    if not guiRef then return end
+    
+    local status = guiRef.Frame:FindFirstChild("StatusLabel")
+    local btn = guiRef.Frame:FindFirstChild("ToggleButton")
+    local stats = guiRef.Frame:FindFirstChild("StatsLabel")
+    local height = guiRef.Frame:FindFirstChild("HeightLabel")
+    
+    if status then
+        if isFarming then
+            status.Text = "🟢 ВКЛЮЧЁН"
+            status.TextColor3 = Color3.fromRGB(50, 255, 50)
+        else
+            status.Text = "⚪ ОТКЛЮЧЁН"
+            status.TextColor3 = Color3.fromRGB(255, 50, 50)
+        end
     end
     
-    isCollecting = false
+    if btn then
+        if isFarming then
+            btn.Text = "🔴 ВЫКЛЮЧИТЬ (F1)"
+            btn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+        else
+            btn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
+            btn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+        end
+    end
+    
+    if stats then
+        stats.Text = "🪙 Собрано: " .. coinCount
+    end
+    
+    if height then
+        height.Text = "Высота: " .. config.heightOffset
+    end
 end
 
 -- ===== ВКЛЮЧЕНИЕ =====
@@ -289,8 +324,8 @@ local function startFarming()
         end
     end)
     
+    updateUI()
     print("[MM2 Farm] ✅ ВКЛЮЧЁН")
-    print("[MM2 Farm] 🔹 Высота: " .. config.heightOffset)
 end
 
 -- ===== ВЫКЛЮЧЕНИЕ =====
@@ -302,6 +337,7 @@ local function stopFarming()
     destroyFlightPhysics()
     removeNoclip()
     
+    updateUI()
     print("[MM2 Farm] ❌ ВЫКЛЮЧЁН")
     print("[MM2 Farm] 📊 Собрано: " .. coinCount)
 end
@@ -315,7 +351,7 @@ local function toggleFarming()
     end
 end
 
--- ===== GUI =====
+-- ===== СОЗДАНИЕ GUI =====
 local function createGUI()
     if player.PlayerGui:FindFirstChild("MM2FarmGUI") then
         player.PlayerGui.MM2FarmGUI:Destroy()
@@ -325,6 +361,7 @@ local function createGUI()
     screenGui.Name = "MM2FarmGUI"
     screenGui.Parent = player.PlayerGui
     screenGui.ResetOnSpawn = false
+    guiRef = screenGui
     
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(0, 250, 0, 190)
@@ -340,7 +377,7 @@ local function createGUI()
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v5"
+    title.Text = " MM2 FARM v6"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
@@ -356,17 +393,19 @@ local function createGUI()
     statusLabel.Font = Enum.Font.Gotham
     statusLabel.Name = "StatusLabel"
     statusLabel.Parent = frame
+    statusRef = statusLabel
     
     local statsLabel = Instance.new("TextLabel")
     statsLabel.Size = UDim2.new(1, 0, 0, 18)
     statsLabel.Position = UDim2.new(0, 0, 0, 56)
     statsLabel.BackgroundTransparency = 1
-    statsLabel.Text = " Собрано: 0"
+    statsLabel.Text = "🪙 Собрано: 0"
     statsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     statsLabel.TextScaled = true
     statsLabel.Font = Enum.Font.Gotham
     statsLabel.Name = "StatsLabel"
     statsLabel.Parent = frame
+    statsRef = statsLabel
     
     local heightLabel = Instance.new("TextLabel")
     heightLabel.Size = UDim2.new(1, 0, 0, 18)
@@ -378,6 +417,7 @@ local function createGUI()
     heightLabel.Font = Enum.Font.Gotham
     heightLabel.Name = "HeightLabel"
     heightLabel.Parent = frame
+    heightRef = heightLabel
     
     local upBtn = Instance.new("TextButton")
     upBtn.Size = UDim2.new(0.3, 0, 0, 25)
@@ -411,32 +451,10 @@ local function createGUI()
     toggleBtn.Font = Enum.Font.GothamBold
     toggleBtn.BorderSizePixel = 0
     toggleBtn.Parent = frame
-    
-    local function updateUI()
-        local status = screenGui.Frame.StatusLabel
-        local btn = screenGui.Frame.ToggleButton
-        local stats = screenGui.Frame.StatsLabel
-        local height = screenGui.Frame.HeightLabel
-        
-        if isFarming then
-            status.Text = "🟢 ВКЛЮЧЁН"
-            status.TextColor3 = Color3.fromRGB(50, 255, 50)
-            btn.Text = "🔴 ВЫКЛЮЧИТЬ (F1)"
-            btn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-        else
-            status.Text = "⚪ ОТКЛЮЧЁН"
-            status.TextColor3 = Color3.fromRGB(255, 50, 50)
-            btn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
-            btn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
-        end
-        
-        stats.Text = " Собрано: " .. coinCount
-        height.Text = "Высота: " .. config.heightOffset
-    end
+    buttonRef = toggleBtn
     
     toggleBtn.MouseButton1Click:Connect(function()
         toggleFarming()
-        updateUI()
     end)
     
     upBtn.MouseButton1Click:Connect(function()
@@ -450,18 +468,6 @@ local function createGUI()
         if config.heightOffset < -25 then config.heightOffset = -25 end
         updateUI()
     end)
-    
-    spawn(function()
-        while screenGui and screenGui.Parent do
-            task.wait(1)
-            local stats = screenGui:FindFirstChild("Frame") and screenGui.Frame:FindFirstChild("StatsLabel")
-            if stats then
-                stats.Text = " Собрано: " .. coinCount
-            end
-        end
-    end)
-    
-    return { updateUI = updateUI }
 end
 
 -- ===== ГОРЯЧАЯ КЛАВИША =====
@@ -469,24 +475,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == config.toggleKey then
         toggleFarming()
-        local gui = player.PlayerGui:FindFirstChild("MM2FarmGUI")
-        if gui then
-            local status = gui.Frame:FindFirstChild("StatusLabel")
-            local btn = gui.Frame:FindFirstChild("ToggleButton")
-            if status and btn then
-                if isFarming then
-                    status.Text = "🟢 ВКЛЮЧЁН"
-                    status.TextColor3 = Color3.fromRGB(50, 255, 50)
-                    btn.Text = "🔴 ВЫКЛЮЧИТЬ (F1)"
-                    btn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-                else
-                    status.Text = "⚪ ОТКЛЮЧЁН"
-                    status.TextColor3 = Color3.fromRGB(255, 50, 50)
-                    btn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
-                    btn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
-                end
-            end
-        end
     end
 end)
 
@@ -504,10 +492,12 @@ end)
 
 -- ===== ЗАПУСК =====
 createGUI()
+updateUI()
 
 print("========================================")
-print("   MM2 FARM v5 - НОКЛИП + ОПТИМИЗАЦИЯ")
+print("   MM2 FARM v6 - ИСПРАВЛЕН GUI И РЕГДОЛЛ")
 print("  🔹 F1 - вкл/выкл")
 print("  🔹 ▲▼ - высота")
-print("  🔹 Поиск монет с задержкой (нет лагов)")
+print("  🔹 Статус работает")
+print("  🔹 Персонаж НЕ падает")
 print("========================================")
