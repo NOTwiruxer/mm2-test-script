@@ -1,5 +1,5 @@
--- SWILL | Murder Mystery 2 Auto Coin Collector for Delta Executor
--- Активация: скопируй и вставь в Delta, нажми Execute
+-- SWILL | Murder Mystery 2 - Auto Coin Collector (Object-based)
+-- Для Delta Executor на телефоне
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,142 +8,85 @@ local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 -- НАСТРОЙКИ
-local COLLECT_RADIUS = 150        -- радиус сбора монет
-local CLICK_COOLDOWN = 0.15       -- задержка между кликами (сек)
-local ROTATION_SPEED = 2.5        -- скорость поворота камеры (градусов/кадр)
+local COLLECT_RADIUS = 150        -- Радиус поиска монет
+local CLICK_COOLDOWN = 0.15       -- Задержка между кликами
 
 local lastClickTime = 0
 local coinsCollected = 0
 
--- Функция поиска ближайшей монеты
+-- Функция поиска ближайшей монеты по объектам
 local function findNearestCoin()
     local character = LocalPlayer.Character
     if not character or not character:FindFirstChild("HumanoidRootPart") then
         return nil
     end
-    
+
     local rootPart = character.HumanoidRootPart
     local rootPos = rootPart.Position
     local nearest = nil
     local nearestDist = COLLECT_RADIUS
-    
-    -- Ищем все объекты с именем "Coin" (или "Handle" у некоторых монет)
+
+    -- Ищем все объекты в игре
     for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA("BasePart") and (v.Name == "Coin" or v.Name == "Handle") then
-            if v.Parent and v.Parent:FindFirstChild("Handle") then
-                v = v.Parent.Handle
-            end
-            local pos = v.Position
-            local dist = (pos - rootPos).Magnitude
-            if dist < nearestDist then
-                nearest = v
-                nearestDist = dist
+        -- Проверяем, является ли объект частью (BasePart)
+        if v:IsA("BasePart") then
+            -- Проверяем возможные имена монет
+            if v.Name == "Coin" or v.Name == "Handle" then
+                local pos = v.Position
+                local dist = (pos - rootPos).Magnitude
+                if dist < nearestDist then
+                    nearest = v
+                    nearestDist = dist
+                end
             end
         end
     end
-    
+
     return nearest, nearestDist
 end
 
--- Функция клика по экрану (эмуляция нажатия)
+-- Функция клика по монете
 local function clickAtScreenPosition(screenPos)
-    local x = screenPos.X
-    local y = screenPos.Y
-    
-    -- Имитируем нажатие и отпускание
+    -- Имитация нажатия мыши
     UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, true)
     task.wait(0.05)
     UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, false)
-    
+
     lastClickTime = tick()
     coinsCollected = coinsCollected + 1
-end
-
--- Поворот камеры к монете
-local function rotateToCoin(coinPos)
-    local character = LocalPlayer.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then
-        return
-    end
-    
-    local rootPos = character.HumanoidRootPart.Position
-    local direction = (coinPos - rootPos).Unit
-    local lookVector = Camera.CFrame.LookVector
-    
-    -- Вычисляем угол между текущим направлением и монетой
-    local angle = math.atan2(direction.X, direction.Z) - math.atan2(lookVector.X, lookVector.Z)
-    
-    -- Поворачиваем камеру плавно
-    local newCFrame = Camera.CFrame * CFrame.Angles(0, angle, 0)
-    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, 0.1)
 end
 
 -- Основной цикл сбора
 local function collectLoop()
     while true do
         task.wait(0.05)
-        
-        -- Проверяем, жив ли игрок
+
         if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Humanoid") then
             continue
         end
-        
+
         local coin, dist = findNearestCoin()
-        
+
         if coin and dist then
-            -- Переводим 3D-позицию монеты в экранные координаты
             local screenPos, onScreen = Camera:WorldToViewportPoint(coin.Position)
-            
+
             if onScreen then
-                -- Если монета на экране, кликаем по ней
                 if tick() - lastClickTime > CLICK_COOLDOWN then
                     clickAtScreenPosition(Vector2.new(screenPos.X, screenPos.Y))
                 end
             else
-                -- Если монета вне экрана — поворачиваем камеру к ней
-                rotateToCoin(coin.Position)
+                -- Если монета не на экране, можно повернуть камеру к ней
+                local rootPos = LocalPlayer.Character.HumanoidRootPart.Position
+                local direction = (coin.Position - rootPos).Unit
+                local lookVector = Camera.CFrame.LookVector
+                local angle = math.atan2(direction.X, direction.Z) - math.atan2(lookVector.X, lookVector.Z)
+                local newCFrame = Camera.CFrame * CFrame.Angles(0, angle, 0)
+                Camera.CFrame = Camera.CFrame:Lerp(newCFrame, 0.1)
             end
-        else
-            -- Если монет нет — медленно вращаем камеру для поиска
-            local currentCF = Camera.CFrame
-            Camera.CFrame = currentCF * CFrame.Angles(0, math.rad(ROTATION_SPEED), 0)
         end
     end
 end
 
--- Запуск сбора
-print("[SWILL] Запуск автосбора монет MM2")
-print("[SWILL] Нажми F5 для остановки (если поддерживается)")
-
--- Создаём поток
+-- Запуск скрипта
+print("[SWILL] Запуск сбора монет (поиск по объектам)")
 task.spawn(collectLoop)
-
--- GUI-индикатор (опционально)
-local ScreenGui = Instance.new("ScreenGui")
-local Frame = Instance.new("Frame")
-local TextLabel = Instance.new("TextLabel")
-
-ScreenGui.Parent = LocalPlayer.PlayerGui
-Frame.Parent = ScreenGui
-Frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-Frame.BackgroundTransparency = 0.5
-Frame.Size = UDim2.new(0, 200, 0, 50)
-Frame.Position = UDim2.new(0, 10, 0, 10)
-
-TextLabel.Parent = Frame
-TextLabel.BackgroundTransparency = 1
-TextLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-TextLabel.Size = UDim2.new(1, 0, 1, 0)
-TextLabel.Text = "SWILL COIN COLLECTOR"
-TextLabel.Font = Enum.Font.GothamBold
-TextLabel.TextSize = 16
-
--- Обновление счётчика
-task.spawn(function()
-    while true do
-        task.wait(1)
-        TextLabel.Text = "SWILL | Монет собрано: " .. coinsCollected
-    end
-end)
-
-print("[SWILL] Готово! Монеты собираются автоматически.")
