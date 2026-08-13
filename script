@@ -1,8 +1,8 @@
 --[[
-    MM2 COIN FARM v6 - СТАТУС ИСПРАВЛЕН + НЕТ РЕГДОЛЛА
-    - GUI обновляется всегда
-    - Персонаж НЕ падает (анти-регдолл)
-    - Плавный полёт
+    MM2 COIN FARM v7 - ГАРАНТИРОВАННЫЙ ПОЛЁТ
+    - BodyForce для удержания в воздухе
+    - BodyVelocity для движения
+    - Ноклип работает всегда
     - Оптимизированный поиск монет
 ]]
 
@@ -14,8 +14,8 @@ local player = Players.LocalPlayer
 -- ===== НАСТРОЙКИ =====
 local config = {
     heightOffset = -6,
-    collectionDistance = 8,
-    flySpeed = 40,
+    collectionDistance = 10,
+    flySpeed = 45,
     toggleKey = Enum.KeyCode.F1,
 }
 
@@ -31,15 +31,12 @@ local noclipParts = {}
 -- ФИЗИКА ПОЛЁТА
 local bodyVelocity = nil
 local bodyGyro = nil
+local bodyForce = nil  -- Для компенсации гравитации
 
 -- GUI
 local guiRef = nil
-local statusRef = nil
-local buttonRef = nil
-local statsRef = nil
-local heightRef = nil
 
--- Таймер для поиска монет
+-- Таймер
 local nextSearchTime = 0
 local searchCooldown = 0.3
 
@@ -49,9 +46,6 @@ local function getCharacter()
     if character then
         rootPart = character:FindFirstChild("HumanoidRootPart")
         humanoid = character:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.PlatformStand = true
-        end
         if isFarming then
             applyNoclip()
             createFlightPhysics()
@@ -87,30 +81,43 @@ local function removeNoclip()
     noclipParts = {}
 end
 
--- ===== СОЗДАНИЕ ФИЗИКИ ПОЛЁТА (АНТИ-РЕГДОЛЛ) =====
+-- ===== ФИЗИКА ПОЛЁТА (BodyForce + BodyVelocity + BodyGyro) =====
 local function createFlightPhysics()
     if not rootPart then return end
     destroyFlightPhysics()
     
-    -- BodyVelocity для движения
+    -- 1. BodyForce — компенсирует гравитацию (держит в воздухе)
+    bodyForce = Instance.new("BodyForce")
+    bodyForce.Force = Vector3.new(0, rootPart:GetMass() * workspace.Gravity, 0)
+    bodyForce.Parent = rootPart
+    
+    -- 2. BodyVelocity — для движения
     bodyVelocity = Instance.new("BodyVelocity")
     bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
     bodyVelocity.Velocity = Vector3.new(0, 0, 0)
     bodyVelocity.Parent = rootPart
     
-    -- BodyGyro для стабилизации
+    -- 3. BodyGyro — для стабилизации
     bodyGyro = Instance.new("BodyGyro")
     bodyGyro.MaxTorque = Vector3.new(4000, 4000, 4000)
     bodyGyro.CFrame = rootPart.CFrame
     bodyGyro.Parent = rootPart
     
-    -- Включаем PlatformStand, чтобы персонаж не падал
+    -- Отключаем гравитацию и анимации
     if humanoid then
         humanoid.PlatformStand = true
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
     end
+    
+    print("[MM2 Farm] ✅ Физика полёта создана")
 end
 
 local function destroyFlightPhysics()
+    if bodyForce then
+        bodyForce:Destroy()
+        bodyForce = nil
+    end
     if bodyVelocity then
         bodyVelocity:Destroy()
         bodyVelocity = nil
@@ -121,6 +128,8 @@ local function destroyFlightPhysics()
     end
     if humanoid then
         humanoid.PlatformStand = false
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
     end
 end
 
@@ -278,13 +287,8 @@ local function updateUI()
     local height = guiRef.Frame:FindFirstChild("HeightLabel")
     
     if status then
-        if isFarming then
-            status.Text = "🟢 ВКЛЮЧЁН"
-            status.TextColor3 = Color3.fromRGB(50, 255, 50)
-        else
-            status.Text = "⚪ ОТКЛЮЧЁН"
-            status.TextColor3 = Color3.fromRGB(255, 50, 50)
-        end
+        status.Text = isFarming and "🟢 ВКЛЮЧЁН" or "⚪ ОТКЛЮЧЁН"
+        status.TextColor3 = isFarming and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
     end
     
     if btn then
@@ -325,7 +329,8 @@ local function startFarming()
     end)
     
     updateUI()
-    print("[MM2 Farm] ✅ ВКЛЮЧЁН")
+    print("[MM2 Farm] ✅ АВТОФАРМ ВКЛЮЧЁН")
+    print("[MM2 Farm] 🔹 Высота: " .. config.heightOffset)
 end
 
 -- ===== ВЫКЛЮЧЕНИЕ =====
@@ -338,8 +343,8 @@ local function stopFarming()
     removeNoclip()
     
     updateUI()
-    print("[MM2 Farm] ❌ ВЫКЛЮЧЁН")
-    print("[MM2 Farm] 📊 Собрано: " .. coinCount)
+    print("[MM2 Farm] ❌ АВТОФАРМ ВЫКЛЮЧЁН")
+    print("[MM2 Farm] 📊 Собрано: " .. coinCount .. " монет")
 end
 
 -- ===== ПЕРЕКЛЮЧЕНИЕ =====
@@ -377,7 +382,7 @@ local function createGUI()
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v6"
+    title.Text = " MM2 FARM v7"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
@@ -393,7 +398,6 @@ local function createGUI()
     statusLabel.Font = Enum.Font.Gotham
     statusLabel.Name = "StatusLabel"
     statusLabel.Parent = frame
-    statusRef = statusLabel
     
     local statsLabel = Instance.new("TextLabel")
     statsLabel.Size = UDim2.new(1, 0, 0, 18)
@@ -405,7 +409,6 @@ local function createGUI()
     statsLabel.Font = Enum.Font.Gotham
     statsLabel.Name = "StatsLabel"
     statsLabel.Parent = frame
-    statsRef = statsLabel
     
     local heightLabel = Instance.new("TextLabel")
     heightLabel.Size = UDim2.new(1, 0, 0, 18)
@@ -417,7 +420,6 @@ local function createGUI()
     heightLabel.Font = Enum.Font.Gotham
     heightLabel.Name = "HeightLabel"
     heightLabel.Parent = frame
-    heightRef = heightLabel
     
     local upBtn = Instance.new("TextButton")
     upBtn.Size = UDim2.new(0.3, 0, 0, 25)
@@ -451,21 +453,14 @@ local function createGUI()
     toggleBtn.Font = Enum.Font.GothamBold
     toggleBtn.BorderSizePixel = 0
     toggleBtn.Parent = frame
-    buttonRef = toggleBtn
     
-    toggleBtn.MouseButton1Click:Connect(function()
-        toggleFarming()
-    end)
-    
+    toggleBtn.MouseButton1Click:Connect(toggleFarming)
     upBtn.MouseButton1Click:Connect(function()
-        config.heightOffset = config.heightOffset + 1
-        if config.heightOffset > 0 then config.heightOffset = 0 end
+        config.heightOffset = math.min(0, config.heightOffset + 1)
         updateUI()
     end)
-    
     downBtn.MouseButton1Click:Connect(function()
-        config.heightOffset = config.heightOffset - 1
-        if config.heightOffset < -25 then config.heightOffset = -25 end
+        config.heightOffset = math.max(-25, config.heightOffset - 1)
         updateUI()
     end)
 end
@@ -478,7 +473,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- ===== ОБРАБОТКА РЕСПАУНА =====
+-- ===== РЕСПАУН =====
 player.CharacterAdded:Connect(function(newChar)
     character = newChar
     rootPart = newChar:FindFirstChild("HumanoidRootPart")
@@ -495,9 +490,8 @@ createGUI()
 updateUI()
 
 print("========================================")
-print("   MM2 FARM v6 - ИСПРАВЛЕН GUI И РЕГДОЛЛ")
+print("   MM2 FARM v7 - ГАРАНТИРОВАННЫЙ ПОЛЁТ")
 print("  🔹 F1 - вкл/выкл")
 print("  🔹 ▲▼ - высота")
-print("  🔹 Статус работает")
-print("  🔹 Персонаж НЕ падает")
+print("  🔹 BodyForce удерживает в воздухе")
 print("========================================")
