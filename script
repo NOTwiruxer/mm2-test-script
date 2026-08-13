@@ -1,359 +1,149 @@
---[[
-    MM2 COIN FARM v11 - МАКСИМАЛЬНО ПРОСТОЙ
-    - Фиксированная высота под картой
-    - Плавный полёт
-    - Сбор монет
-    - Нет лагов
-]]
+-- SWILL | Murder Mystery 2 Auto Coin Collector for Delta Executor
+-- Активация: скопируй и вставь в Delta, нажми Execute
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local player = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
 
--- ===== НАСТРОЙКИ (МИНИМУМ) =====
-local config = {
-    flySpeed = 40,
-    toggleKey = Enum.KeyCode.F1,
-    searchInterval = 0.5,
-}
+-- НАСТРОЙКИ
+local COLLECT_RADIUS = 150        -- радиус сбора монет
+local CLICK_COOLDOWN = 0.15       -- задержка между кликами (сек)
+local ROTATION_SPEED = 2.5        -- скорость поворота камеры (градусов/кадр)
 
--- ===== ПЕРЕМЕННЫЕ =====
-local character = nil
-local rootPart = nil
-local isFarming = false
-local coinCount = 0
-local flyConnection = nil
-local currentTarget = nil
-local currentTargetPos = nil
-local nextSearchTime = 0
-local guiRef = nil
+local lastClickTime = 0
+local coinsCollected = 0
 
--- ===== НОКЛИП =====
-local function setNoclip(state)
-    if not character then return end
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = not state
+-- Функция поиска ближайшей монеты
+local function findNearestCoin()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+    
+    local rootPart = character.HumanoidRootPart
+    local rootPos = rootPart.Position
+    local nearest = nil
+    local nearestDist = COLLECT_RADIUS
+    
+    -- Ищем все объекты с именем "Coin" (или "Handle" у некоторых монет)
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and (v.Name == "Coin" or v.Name == "Handle") then
+            if v.Parent and v.Parent:FindFirstChild("Handle") then
+                v = v.Parent.Handle
+            end
+            local pos = v.Position
+            local dist = (pos - rootPos).Magnitude
+            if dist < nearestDist then
+                nearest = v
+                nearestDist = dist
+            end
         end
     end
+    
+    return nearest, nearestDist
 end
 
--- ===== ПОИСК МОНЕТ (ТОЛЬКО ТЕ, ЧТО НАД ПОЛОМ) =====
-local function getCoins()
-    local coins = {}
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and obj.Parent then
-            local name = obj.Name:lower()
-            if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") then
-                -- Игнорируем монеты, которые уже под картой (чтобы не собирать их повторно)
-                if obj.Position.Y > -10 then
-                    table.insert(coins, obj)
+-- Функция клика по экрану (эмуляция нажатия)
+local function clickAtScreenPosition(screenPos)
+    local x = screenPos.X
+    local y = screenPos.Y
+    
+    -- Имитируем нажатие и отпускание
+    UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, true)
+    task.wait(0.05)
+    UserInputService:SetMouseButtonState(Enum.UserInputType.MouseButton1, false)
+    
+    lastClickTime = tick()
+    coinsCollected = coinsCollected + 1
+end
+
+-- Поворот камеры к монете
+local function rotateToCoin(coinPos)
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        return
+    end
+    
+    local rootPos = character.HumanoidRootPart.Position
+    local direction = (coinPos - rootPos).Unit
+    local lookVector = Camera.CFrame.LookVector
+    
+    -- Вычисляем угол между текущим направлением и монетой
+    local angle = math.atan2(direction.X, direction.Z) - math.atan2(lookVector.X, lookVector.Z)
+    
+    -- Поворачиваем камеру плавно
+    local newCFrame = Camera.CFrame * CFrame.Angles(0, angle, 0)
+    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, 0.1)
+end
+
+-- Основной цикл сбора
+local function collectLoop()
+    while true do
+        task.wait(0.05)
+        
+        -- Проверяем, жив ли игрок
+        if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Humanoid") then
+            continue
+        end
+        
+        local coin, dist = findNearestCoin()
+        
+        if coin and dist then
+            -- Переводим 3D-позицию монеты в экранные координаты
+            local screenPos, onScreen = Camera:WorldToViewportPoint(coin.Position)
+            
+            if onScreen then
+                -- Если монета на экране, кликаем по ней
+                if tick() - lastClickTime > CLICK_COOLDOWN then
+                    clickAtScreenPosition(Vector2.new(screenPos.X, screenPos.Y))
                 end
+            else
+                -- Если монета вне экрана — поворачиваем камеру к ней
+                rotateToCoin(coin.Position)
             end
-        end
-    end
-    return coins
-end
-
-local function getClosestCoin()
-    if not rootPart then return nil end
-    local coins = getCoins()
-    if #coins == 0 then return nil end
-    
-    local closest = nil
-    local closestDist = math.huge
-    local pos = rootPart.Position
-    
-    for _, coin in ipairs(coins) do
-        if coin and coin.Parent then
-            local dist = (coin.Position - pos).Magnitude
-            if dist < closestDist then
-                closestDist = dist
-                closest = coin
-            end
-        end
-    end
-    return closest
-end
-
--- ===== СБОР МОНЕТЫ =====
-local function collectCoin(coin)
-    if not coin or not coin.Parent then return false end
-    
-    local success = false
-    pcall(function()
-        -- ClickDetector
-        local clickDet = coin:FindFirstChild("ClickDetector")
-        if clickDet then
-            clickDet:FireClick(player.Mouse)
-            success = true
-            return
-        end
-        
-        -- Эмуляция касания
-        local fakePart = Instance.new("Part")
-        fakePart.CanCollide = false
-        fakePart.Transparency = 1
-        fakePart.Size = Vector3.new(0.5, 0.5, 0.5)
-        fakePart.Position = coin.Position + Vector3.new(0, 1, 0)
-        fakePart.Parent = workspace
-        
-        if coin.Touched then
-            coin.Touched:Fire(fakePart)
-            success = true
-        end
-        
-        game:GetService("Debris"):AddItem(fakePart, 0.05)
-    end)
-    
-    if success then
-        coinCount = coinCount + 1
-        return true
-    end
-    return false
-end
-
--- ===== ОСНОВНОЙ ЦИКЛ =====
-local function mainLoop()
-    if not rootPart or not isFarming then return end
-    
-    -- Поиск новой цели (не чаще чем раз в 0.5 сек)
-    local now = tick()
-    if now - nextSearchTime >= config.searchInterval then
-        nextSearchTime = now
-        local coin = getClosestCoin()
-        if coin then
-            currentTarget = coin
-            -- ВЫСОТА ФИКСИРОВАННАЯ: монета + смещение под карту
-            currentTargetPos = coin.Position + Vector3.new(0, -8, 0)
         else
-            currentTarget = nil
-            currentTargetPos = nil
+            -- Если монет нет — медленно вращаем камеру для поиска
+            local currentCF = Camera.CFrame
+            Camera.CFrame = currentCF * CFrame.Angles(0, math.rad(ROTATION_SPEED), 0)
         end
     end
-    
-    -- Если цели нет - летим в случайную точку под картой
-    if not currentTarget or not currentTargetPos then
-        local time = tick()
-        local randomPos = Vector3.new(
-            math.sin(time * 0.3) * 30,
-            -8,
-            math.cos(time * 0.4) * 30
-        )
-        rootPart.CFrame = CFrame.new(randomPos)
-        rootPart.Velocity = Vector3.new(math.sin(time * 0.3) * 10, 0, math.cos(time * 0.4) * 10)
-        return
-    end
-    
-    -- Летим к цели
-    local currentPos = rootPart.Position
-    local distance = (currentTargetPos - currentPos).Magnitude
-    
-    -- Если близко - собираем
-    if distance < 10 then
-        local collected = collectCoin(currentTarget)
-        if collected then
-            currentTarget = nil
-            currentTargetPos = nil
-            nextSearchTime = 0 -- сразу ищем новую
-        end
-        return
-    end
-    
-    -- Плавный полёт
-    local direction = (currentTargetPos - currentPos).Unit
-    local newPos = currentPos + direction * config.flySpeed * 0.5
-    rootPart.CFrame = CFrame.new(newPos)
-    rootPart.Velocity = direction * config.flySpeed
 end
 
--- ===== ВКЛЮЧЕНИЕ =====
-local function startFarming()
-    if isFarming then return end
-    
-    character = player.Character
-    if not character then
-        print("[MM2 Farm] ❌ Нет персонажа")
-        return
-    end
-    
-    rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then
-        print("[MM2 Farm] ❌ Нет HumanoidRootPart")
-        return
-    end
-    
-    isFarming = true
-    setNoclip(true)
-    
-    if flyConnection then flyConnection:Disconnect() end
-    flyConnection = RunService.Heartbeat:Connect(mainLoop)
-    
-    currentTarget = nil
-    currentTargetPos = nil
-    nextSearchTime = 0
-    
-    updateUI()
-    print("[MM2 Farm] ✅ ВКЛЮЧЁН")
-end
+-- Запуск сбора
+print("[SWILL] Запуск автосбора монет MM2")
+print("[SWILL] Нажми F5 для остановки (если поддерживается)")
 
--- ===== ВЫКЛЮЧЕНИЕ =====
-local function stopFarming()
-    if not isFarming then return end
-    
-    isFarming = false
-    
-    if flyConnection then
-        flyConnection:Disconnect()
-        flyConnection = nil
-    end
-    
-    setNoclip(false)
-    currentTarget = nil
-    currentTargetPos = nil
-    
-    updateUI()
-    print("[MM2 Farm] ❌ ВЫКЛЮЧЁН")
-    print("[MM2 Farm] 📊 Собрано: " .. coinCount)
-end
+-- Создаём поток
+task.spawn(collectLoop)
 
--- ===== ПЕРЕКЛЮЧЕНИЕ =====
-local function toggleFarming()
-    if isFarming then
-        stopFarming()
-    else
-        startFarming()
-    end
-end
+-- GUI-индикатор (опционально)
+local ScreenGui = Instance.new("ScreenGui")
+local Frame = Instance.new("Frame")
+local TextLabel = Instance.new("TextLabel")
 
--- ===== GUI =====
-local function updateUI()
-    if not guiRef then return end
-    
-    local status = guiRef.Frame:FindFirstChild("StatusLabel")
-    local btn = guiRef.Frame:FindFirstChild("ToggleButton")
-    local stats = guiRef.Frame:FindFirstChild("StatsLabel")
-    
-    if status then
-        status.Text = isFarming and "🟢 ВКЛЮЧЁН" or "⚪ ОТКЛЮЧЁН"
-        status.TextColor3 = isFarming and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
-    end
-    
-    if btn then
-        btn.Text = isFarming and "🔴 ВЫКЛЮЧИТЬ (F1)" or "🟢 ВКЛЮЧИТЬ (F1)"
-        btn.BackgroundColor3 = isFarming and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(0, 180, 0)
-    end
-    
-    if stats then
-        stats.Text = "🪙 Собрано: " .. coinCount
-    end
-end
+ScreenGui.Parent = LocalPlayer.PlayerGui
+Frame.Parent = ScreenGui
+Frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Frame.BackgroundTransparency = 0.5
+Frame.Size = UDim2.new(0, 200, 0, 50)
+Frame.Position = UDim2.new(0, 10, 0, 10)
 
-local function createGUI()
-    if player.PlayerGui:FindFirstChild("MM2FarmGUI") then
-        player.PlayerGui.MM2FarmGUI:Destroy()
-    end
-    
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "MM2FarmGUI"
-    screenGui.Parent = player.PlayerGui
-    screenGui.ResetOnSpawn = false
-    guiRef = screenGui
-    
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 220, 0, 150)
-    frame.Position = UDim2.new(0, 10, 0, 10)
-    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-    frame.BackgroundTransparency = 0.1
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Draggable = true
-    frame.Parent = screenGui
-    
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 30)
-    title.Position = UDim2.new(0, 0, 0, 0)
-    title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v11"
-    title.TextColor3 = Color3.fromRGB(255, 215, 0)
-    title.TextScaled = true
-    title.Font = Enum.Font.GothamBold
-    title.Parent = frame
-    
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, 0, 0, 22)
-    statusLabel.Position = UDim2.new(0, 0, 0, 32)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "⚪ ОТКЛЮЧЁН"
-    statusLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
-    statusLabel.TextScaled = true
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.Name = "StatusLabel"
-    statusLabel.Parent = frame
-    
-    local statsLabel = Instance.new("TextLabel")
-    statsLabel.Size = UDim2.new(1, 0, 0, 18)
-    statsLabel.Position = UDim2.new(0, 0, 0, 56)
-    statsLabel.BackgroundTransparency = 1
-    statsLabel.Text = "🪙 Собрано: 0"
-    statsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    statsLabel.TextScaled = true
-    statsLabel.Font = Enum.Font.Gotham
-    statsLabel.Name = "StatsLabel"
-    statsLabel.Parent = frame
-    
-    local infoLabel = Instance.new("TextLabel")
-    infoLabel.Size = UDim2.new(1, 0, 0, 18)
-    infoLabel.Position = UDim2.new(0, 0, 0, 76)
-    infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Высота фиксирована: -8"
-    infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-    infoLabel.TextScaled = true
-    infoLabel.Font = Enum.Font.Gotham
-    infoLabel.Name = "InfoLabel"
-    infoLabel.Parent = frame
-    
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0.8, 0, 0, 32)
-    toggleBtn.Position = UDim2.new(0.1, 0, 0, 100)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
-    toggleBtn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
-    toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    toggleBtn.TextScaled = true
-    toggleBtn.Font = Enum.Font.GothamBold
-    toggleBtn.BorderSizePixel = 0
-    toggleBtn.Parent = frame
-    
-    toggleBtn.MouseButton1Click:Connect(toggleFarming)
-end
+TextLabel.Parent = Frame
+TextLabel.BackgroundTransparency = 1
+TextLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+TextLabel.Size = UDim2.new(1, 0, 1, 0)
+TextLabel.Text = "SWILL COIN COLLECTOR"
+TextLabel.Font = Enum.Font.GothamBold
+TextLabel.TextSize = 16
 
--- ===== ГОРЯЧАЯ КЛАВИША =====
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == config.toggleKey then
-        toggleFarming()
+-- Обновление счётчика
+task.spawn(function()
+    while true do
+        task.wait(1)
+        TextLabel.Text = "SWILL | Монет собрано: " .. coinsCollected
     end
 end)
 
--- ===== РЕСПАУН =====
-player.CharacterAdded:Connect(function(newChar)
-    character = newChar
-    rootPart = newChar:FindFirstChild("HumanoidRootPart")
-    if isFarming then
-        task.wait(0.5)
-        setNoclip(true)
-    end
-end)
-
--- ===== ЗАПУСК =====
-createGUI()
-updateUI()
-
-print("========================================")
-print("   MM2 FARM v11 - ФИНАЛЬНАЯ ВЕРСИЯ")
-print("  🔹 F1 - вкл/выкл")
-print("  🔹 Высота: -8 (фиксированная)")
-print("  🔹 Плавный полёт к монетам")
-print("  🔹 Поиск каждые 0.5 сек")
-print("========================================")
+print("[SWILL] Готово! Монеты собираются автоматически.")
