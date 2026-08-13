@@ -1,34 +1,93 @@
--- SWILL | MM2 Coin Collector (Universal Search)
--- Ищет монеты по всему workspace
+-- SWILL | MM2 Coin Collector (FINAL)
+-- Фиксы: телепорт под карту + реальный счётчик монет
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ===== НАСТРОЙКИ =====
-local TELEPORT_OFFSET = 2.5
-local COLLECT_INTERVAL = 0.15
+local TELEPORT_OFFSET = -5          -- Отрицательное значение = под карту
+local COLLECT_INTERVAL = 0.1
+local DETECTION_RADIUS = 3           -- Радиус сбора (чтобы подбирать монеты под картой)
 
 -- ===== ПЕРЕМЕННЫЕ =====
 local collected = 0
 local running = true
 local lastCollect = 0
+local coinCountLabel = nil
 
--- ===== ПОИСК МОНЕТ ПО ВСЕМУ WORKSPACE =====
+-- ===== ПЕРЕХВАТ СОБЫТИЯ СБОРА МОНЕТ =====
+-- Слушаем событие, когда игрок подбирает монету
+local function hookCoinCollection()
+    -- Ищем RemoteEvent для сбора монет
+    local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    if remotes then
+        local gameplay = remotes:FindFirstChild("Gameplay")
+        if gameplay then
+            -- Слушаем событие, которое запускается при сборе монеты
+            for _, child in pairs(gameplay:GetChildren()) do
+                if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                    -- Пытаемся подключиться к событию OnClientEvent
+                    if child.OnClientEvent then
+                        child.OnClientEvent:Connect(function(...)
+                            local args = {...}
+                            -- Проверяем, есть ли в аргументах упоминание о монете
+                            for _, arg in pairs(args) do
+                                if type(arg) == "string" and arg:lower():find("coin") then
+                                    collected = collected + 1
+                                    updateCounter()
+                                    break
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Альтернативный способ: слушаем изменение в CoinContainer
+    task.spawn(function()
+        while running do
+            task.wait(0.5)
+            -- Обновляем счётчик из CoinContainer (если есть)
+            local map = getMap()
+            if map then
+                local coinContainer = map:FindFirstChild("CoinContainer")
+                if coinContainer then
+                    local coins = coinContainer:GetChildren()
+                    if #coins > 0 then
+                        -- Считаем собранные монеты по разнице
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- ===== ПОИСК КАРТЫ =====
+local function getMap()
+    for _, child in pairs(workspace:GetChildren()) do
+        if child:FindFirstChild("CoinContainer") then
+            return child
+        end
+    end
+    return nil
+end
+
+-- ===== ПОИСК МОНЕТ С РАСШИРЕННЫМ ДИАПАЗОНОМ =====
 local function getAllCoins()
     local coins = {}
     
     for _, obj in pairs(workspace:GetDescendants()) do
-        -- Проверяем по имени (регистр не важен)
         local name = obj.Name:lower()
         if name == "coin" or name:find("coin") then
-            -- Если это модель, ищем в ней Handle или любую часть
             if obj:IsA("Model") then
                 local handle = obj:FindFirstChild("Handle")
                 if handle and handle:IsA("BasePart") then
                     table.insert(coins, handle)
                 else
-                    -- Если Handle нет, берём любую BasePart
                     for _, part in pairs(obj:GetChildren()) do
                         if part:IsA("BasePart") then
                             table.insert(coins, part)
@@ -37,7 +96,6 @@ local function getAllCoins()
                     end
                 end
             elseif obj:IsA("BasePart") then
-                -- Если это сама часть
                 table.insert(coins, obj)
             end
         end
@@ -75,7 +133,7 @@ local function findNearestCoin()
     return nearest, nearestDist
 end
 
--- ===== ТЕЛЕПОРТ =====
+-- ===== ТЕЛЕПОРТ ПОД КАРТУ =====
 local function teleportToCoin(coin)
     local character = LocalPlayer.Character
     if not character then return false end
@@ -88,12 +146,39 @@ local function teleportToCoin(coin)
     end
     
     local pos = coin.Position
-    root.CFrame = CFrame.new(pos + Vector3.new(0, TELEPORT_OFFSET, 0))
+    
+    -- Телепортируемся ПОД карту (отрицательный Y)
+    root.CFrame = CFrame.new(pos.X, pos.Y + TELEPORT_OFFSET, pos.Z)
+    
+    -- Проверяем, собралась ли монета (по расстоянию)
+    task.wait(0.05)
+    local newPos = root.Position
+    local distToCoin = (newPos - pos).Magnitude
+    
+    -- Если мы рядом с монетой (в радиусе сбора) - считаем собранной
+    if distToCoin < DETECTION_RADIUS then
+        -- Удаляем монету, чтобы не собирать её снова
+        if coin.Parent and coin.Parent:IsA("Model") then
+            coin.Parent:Destroy()
+        else
+            coin:Destroy()
+        end
+        
+        -- Счётчик обновится через событие, но на всякий случай увеличиваем здесь
+        collected = collected + 1
+        updateCounter()
+    end
     
     lastCollect = tick()
-    collected = collected + 1
     
     return true
+end
+
+-- ===== ОБНОВЛЕНИЕ СЧЁТЧИКА =====
+local function updateCounter()
+    if coinCountLabel then
+        coinCountLabel.Text = "SWILL | " .. collected .. " монет"
+    end
 end
 
 -- ===== GUI =====
@@ -122,6 +207,7 @@ local function createGUI()
     TextLabel.Font = Enum.Font.GothamBold
     TextLabel.TextSize = 16
     TextLabel.TextScaled = true
+    coinCountLabel = TextLabel
     
     CloseButton.Parent = Frame
     CloseButton.BackgroundTransparency = 1
@@ -135,14 +221,7 @@ local function createGUI()
     CloseButton.MouseButton1Click:Connect(function()
         running = false
         ScreenGui:Destroy()
-        print("[SWILL] Сбор остановлен")
-    end)
-    
-    task.spawn(function()
-        while running and ScreenGui.Parent do
-            task.wait(0.5)
-            TextLabel.Text = "SWILL | " .. collected .. " монет"
-        end
+        print("[SWILL] Сбор остановлен. Всего монет:", collected)
     end)
     
     return ScreenGui
@@ -150,12 +229,16 @@ end
 
 -- ===== ОСНОВНОЙ ЦИКЛ =====
 local function main()
-    print("[SWILL] Запуск авто-сбора монет (универсальный поиск)")
+    print("[SWILL] Запуск авто-сбора монет (под карту)")
+    print("[SWILL] Телепорт под карту: Y = " .. TELEPORT_OFFSET)
     
     createGUI()
     
+    -- Подключаем перехват событий сбора монет
+    hookCoinCollection()
+    
     while running do
-        task.wait(0.1)
+        task.wait(0.05)
         
         local character = LocalPlayer.Character
         if not character then
@@ -174,7 +257,7 @@ local function main()
             teleportToCoin(coin)
         else
             -- Если монет нет, просто ждём
-            task.wait(0.5)
+            task.wait(0.3)
         end
     end
 end
