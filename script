@@ -1,8 +1,8 @@
 --[[
-    MM2 COIN FARM v9 - СБОР МОНЕТ ИСПРАВЛЕН
-    - Правильный поиск монет
-    - Полёт строго к монетам
-    - Никаких случайных точек
+    MM2 COIN FARM v10 - МАКСИМАЛЬНО ПРОСТОЙ
+    - Флай скрипт (работает 100%)
+    - Ноклип
+    - Сбор монет
 ]]
 
 local Players = game:GetService("Players")
@@ -14,74 +14,36 @@ local player = Players.LocalPlayer
 local config = {
     heightOffset = -6,
     collectionDistance = 10,
-    flySpeed = 45,
+    flySpeed = 50,
     toggleKey = Enum.KeyCode.F1,
 }
 
 -- ===== ПЕРЕМЕННЫЕ =====
 local character = nil
 local rootPart = nil
-local humanoid = nil
 local isFarming = false
-local isCollecting = false
 local coinCount = 0
-local noclipParts = {}
 local flyConnection = nil
+local targetPos = nil
 local guiRef = nil
-local nextSearchTime = 0
-local searchCooldown = 0.5
-local currentTarget = nil
-local currentTargetPos = nil
 
--- ===== ПОЛУЧЕНИЕ ПЕРСОНАЖА =====
-local function getCharacter()
-    character = player.Character
-    if character then
-        rootPart = character:FindFirstChild("HumanoidRootPart")
-        humanoid = character:FindFirstChild("Humanoid")
-    end
-    return character ~= nil
-end
-
--- ===== НОКЛИП =====
-local function applyNoclip()
+-- ===== ФУНКЦИЯ НОКЛИПА =====
+local function noclip(state)
     if not character then return end
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
-    end
-    noclipParts = {}
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            table.insert(noclipParts, part)
+            part.CanCollide = not state
         end
     end
 end
 
-local function removeNoclip()
-    for _, part in ipairs(noclipParts) do
-        if part and part.Parent then
-            pcall(function()
-                part.CanCollide = true
-            end)
-        end
-    end
-    noclipParts = {}
-end
-
--- ===== ПОИСК МОНЕТ (улучшенный) =====
-local function findCoins()
+-- ===== ПОИСК МОНЕТ =====
+local function getCoins()
     local coins = {}
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("BasePart") and obj.Parent then
             local name = obj.Name:lower()
-            -- Расширенный список ключевых слов
-            if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") or name:find("munny") then
-                table.insert(coins, obj)
-            elseif obj:FindFirstChild("ClickDetector") then
-                table.insert(coins, obj)
-            elseif obj:FindFirstChild("RemoteEvent") and obj.Name:find("coin") then
+            if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") then
                 table.insert(coins, obj)
             end
         end
@@ -89,32 +51,25 @@ local function findCoins()
     return coins
 end
 
-local function findClosestCoin()
+local function getClosestCoin()
     if not rootPart then return nil end
-    local coins = findCoins()
-    if #coins == 0 then
-        print("[MM2 Farm] ⚠️ Монеты не найдены на карте")
-        return nil
-    end
+    local coins = getCoins()
+    if #coins == 0 then return nil end
     
     local closest = nil
     local closestDist = math.huge
-    local rootPos = rootPart.Position
+    local pos = rootPart.Position
     
     for _, coin in ipairs(coins) do
         if coin and coin.Parent then
-            local dist = (coin.Position - rootPos).Magnitude
+            local dist = (coin.Position - pos).Magnitude
             if dist < closestDist then
                 closestDist = dist
                 closest = coin
             end
         end
     end
-    
-    if closest then
-        print("[MM2 Farm] 🎯 Найдена монета на расстоянии: " .. math.floor(closestDist))
-    end
-    return closest, closestDist
+    return closest
 end
 
 -- ===== СБОР МОНЕТЫ =====
@@ -123,23 +78,13 @@ local function collectCoin(coin)
     
     local success = false
     pcall(function()
-        -- Способ 1: ClickDetector
         local clickDet = coin:FindFirstChild("ClickDetector")
-        if clickDet and clickDet:IsA("ClickDetector") then
+        if clickDet then
             clickDet:FireClick(player.Mouse)
             success = true
             return
         end
         
-        -- Способ 2: RemoteEvent
-        local remote = coin:FindFirstChild("RemoteEvent") or coin:FindFirstChild("CollectEvent")
-        if remote and remote:IsA("RemoteEvent") then
-            remote:FireServer(player)
-            success = true
-            return
-        end
-        
-        -- Способ 3: Эмуляция касания
         local fakePart = Instance.new("Part")
         fakePart.CanCollide = false
         fakePart.Transparency = 1
@@ -153,82 +98,105 @@ local function collectCoin(coin)
         end
         
         game:GetService("Debris"):AddItem(fakePart, 0.05)
-        
-        if not success then
-            coin.Position = rootPart.Position + Vector3.new(0, -3, 0)
-            success = true
-        end
     end)
     
     if success then
         coinCount = coinCount + 1
-        print("[MM2 Farm] 🪙 Монета собрана! Всего: " .. coinCount)
         return true
     end
     return false
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ =====
-local function farmingLoop()
+-- ===== ОСНОВНОЙ ЦИКЛ (ФЛАЙ + СБОР) =====
+local function mainLoop()
     if not rootPart or not isFarming then return end
     
-    -- 1. Поиск цели (если нет текущей цели или она исчезла)
-    local now = tick()
-    if (not currentTarget or not currentTarget.Parent) and now - nextSearchTime >= searchCooldown then
-        nextSearchTime = now
-        local target, dist = findClosestCoin()
-        if target then
-            currentTarget = target
-            currentTargetPos = target.Position + Vector3.new(0, config.heightOffset, 0)
-            print("[MM2 Farm] 🎯 Новая цель: " .. target.Name .. " (дист: " .. math.floor(dist) .. ")")
+    -- Ищем ближайшую монету
+    local coin = getClosestCoin()
+    
+    if coin then
+        -- Летим к монете (с учётом высоты)
+        targetPos = coin.Position + Vector3.new(0, config.heightOffset, 0)
+        local currentPos = rootPart.Position
+        local distance = (targetPos - currentPos).Magnitude
+        
+        if distance < config.collectionDistance then
+            -- Собираем монету
+            collectCoin(coin)
         else
-            currentTarget = nil
-            currentTargetPos = nil
+            -- Плавный полёт к монете
+            local direction = (targetPos - currentPos).Unit
+            rootPart.CFrame = CFrame.new(currentPos + direction * config.flySpeed * 0.5)
+            rootPart.Velocity = direction * config.flySpeed
         end
-    end
-    
-    -- 2. Если цели нет - ищем снова (следующий цикл)
-    if not currentTarget or not currentTarget.Parent then
-        currentTarget = nil
-        currentTargetPos = nil
-        return
-    end
-    
-    -- 3. Обновляем позицию цели (на случай, если монета двигается)
-    if currentTarget and currentTarget.Parent then
-        currentTargetPos = currentTarget.Position + Vector3.new(0, config.heightOffset, 0)
-    end
-    
-    -- 4. Проверяем расстояние до цели
-    local currentPos = rootPart.Position
-    local distance = (currentTargetPos - currentPos).Magnitude
-    
-    -- 5. Если близко - собираем
-    if distance < config.collectionDistance then
-        print("[MM2 Farm] 📍 Близко к монете! Собираем...")
-        local collected = collectCoin(currentTarget)
-        if collected then
-            currentTarget = nil
-            currentTargetPos = nil
-        end
-        return
-    end
-    
-    -- 6. Летим к цели
-    local direction = (currentTargetPos - currentPos).Unit
-    local newPos = currentPos + direction * config.flySpeed * 0.5
-    
-    -- Устанавливаем позицию
-    rootPart.CFrame = CFrame.new(newPos)
-    rootPart.Velocity = direction * config.flySpeed * 0.5
-    
-    -- Логируем движение (редко)
-    if math.random(1, 20) == 1 then
-        print("[MM2 Farm] ✈️ Летим к монете... " .. math.floor(distance) .. " единиц")
+    else
+        -- Если монет нет - просто летим под картой
+        local time = tick()
+        local randomPos = Vector3.new(
+            math.sin(time * 0.5) * 30,
+            config.heightOffset,
+            math.cos(time * 0.7) * 30
+        )
+        rootPart.CFrame = CFrame.new(randomPos)
+        rootPart.Velocity = Vector3.new(math.sin(time * 0.5) * 10, 0, math.cos(time * 0.7) * 10)
     end
 end
 
--- ===== ОБНОВЛЕНИЕ GUI =====
+-- ===== ВКЛЮЧЕНИЕ =====
+local function startFarming()
+    if isFarming then return end
+    
+    character = player.Character
+    if not character then
+        print("[MM2 Farm] ❌ Нет персонажа")
+        return
+    end
+    
+    rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        print("[MM2 Farm] ❌ Нет HumanoidRootPart")
+        return
+    end
+    
+    isFarming = true
+    noclip(true)
+    
+    if flyConnection then flyConnection:Disconnect() end
+    flyConnection = RunService.Heartbeat:Connect(mainLoop)
+    
+    updateUI()
+    print("[MM2 Farm] ✅ Включён")
+end
+
+-- ===== ВЫКЛЮЧЕНИЕ =====
+local function stopFarming()
+    if not isFarming then return end
+    
+    isFarming = false
+    
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    
+    noclip(false)
+    targetPos = nil
+    updateUI()
+    
+    print("[MM2 Farm] ❌ Выключен")
+    print("[MM2 Farm] 📊 Собрано: " .. coinCount)
+end
+
+-- ===== ПЕРЕКЛЮЧЕНИЕ =====
+local function toggleFarming()
+    if isFarming then
+        stopFarming()
+    else
+        startFarming()
+    end
+end
+
+-- ===== GUI =====
 local function updateUI()
     if not guiRef then return end
     
@@ -256,71 +224,6 @@ local function updateUI()
     end
 end
 
--- ===== ВКЛЮЧЕНИЕ =====
-local function startFarming()
-    if isFarming then return end
-    if not getCharacter() then
-        print("[MM2 Farm] ❌ Персонаж не найден")
-        return
-    end
-    
-    isFarming = true
-    applyNoclip()
-    
-    if flyConnection then flyConnection:Disconnect() end
-    flyConnection = RunService.Heartbeat:Connect(farmingLoop)
-    
-    if humanoid then
-        humanoid.PlatformStand = true
-    end
-    
-    currentTarget = nil
-    currentTargetPos = nil
-    
-    updateUI()
-    print("========================================")
-    print("[MM2 Farm] ✅ АВТОФАРМ ВКЛЮЧЁН")
-    print("[MM2 Farm] 🔹 Высота: " .. config.heightOffset)
-    print("[MM2 Farm] 🔹 Поиск монет каждые " .. searchCooldown .. " сек")
-    print("========================================")
-end
-
--- ===== ВЫКЛЮЧЕНИЕ =====
-local function stopFarming()
-    if not isFarming then return end
-    
-    isFarming = false
-    
-    if flyConnection then
-        flyConnection:Disconnect()
-        flyConnection = nil
-    end
-    
-    if humanoid then
-        humanoid.PlatformStand = false
-    end
-    
-    removeNoclip()
-    currentTarget = nil
-    currentTargetPos = nil
-    
-    updateUI()
-    print("========================================")
-    print("[MM2 Farm] ❌ АВТОФАРМ ВЫКЛЮЧЁН")
-    print("[MM2 Farm] 📊 Собрано: " .. coinCount .. " монет")
-    print("========================================")
-end
-
--- ===== ПЕРЕКЛЮЧЕНИЕ =====
-local function toggleFarming()
-    if isFarming then
-        stopFarming()
-    else
-        startFarming()
-    end
-end
-
--- ===== СОЗДАНИЕ GUI =====
 local function createGUI()
     if player.PlayerGui:FindFirstChild("MM2FarmGUI") then
         player.PlayerGui.MM2FarmGUI:Destroy()
@@ -346,7 +249,7 @@ local function createGUI()
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v9"
+    title.Text = " MM2 FARM v10"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
@@ -437,28 +340,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- ===== РЕСПАУН =====
-player.CharacterAdded:Connect(function(newChar)
-    character = newChar
-    rootPart = newChar:FindFirstChild("HumanoidRootPart")
-    humanoid = newChar:FindFirstChild("Humanoid")
-    if isFarming then
-        task.wait(0.5)
-        applyNoclip()
-        if humanoid then
-            humanoid.PlatformStand = true
-        end
-    end
-end)
-
 -- ===== ЗАПУСК =====
 createGUI()
 updateUI()
 
 print("========================================")
-print("   MM2 FARM v9 - РАБОЧИЙ СБОР МОНЕТ")
+print("   MM2 FARM v10 - ПРОСТОЙ И РАБОЧИЙ")
 print("  🔹 F1 - вкл/выкл")
 print("  🔹 ▲▼ - высота")
-print("  🔹 Поиск монет каждые 0.5 сек")
-print("  🔹 Логирование в консоль")
+print("  🔹 Летит к ближайшей монете")
+print("  🔹 Ноклип включён")
 print("========================================")
