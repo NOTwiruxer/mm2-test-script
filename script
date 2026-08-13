@@ -1,68 +1,81 @@
--- SWILL | Murder Mystery 2 - Coin Collector (Teleport Method)
--- Работает на Delta Executor (телефон)
+-- SWILL | MM2 Coin Collector (Universal Search)
+-- Ищет монеты по всему workspace
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ===== НАСТРОЙКИ =====
+local TELEPORT_OFFSET = 2.5
 local COLLECT_INTERVAL = 0.15
-local TELEPORT_OFFSET = 2
 
 -- ===== ПЕРЕМЕННЫЕ =====
 local collected = 0
 local running = true
 local lastCollect = 0
 
--- ===== ПОИСК КАРТЫ =====
-local function getMap()
-    for _, child in pairs(workspace:GetChildren()) do
-        if child:FindFirstChild("CoinContainer") then
-            return child
+-- ===== ПОИСК МОНЕТ ПО ВСЕМУ WORKSPACE =====
+local function getAllCoins()
+    local coins = {}
+    
+    for _, obj in pairs(workspace:GetDescendants()) do
+        -- Проверяем по имени (регистр не важен)
+        local name = obj.Name:lower()
+        if name == "coin" or name:find("coin") then
+            -- Если это модель, ищем в ней Handle или любую часть
+            if obj:IsA("Model") then
+                local handle = obj:FindFirstChild("Handle")
+                if handle and handle:IsA("BasePart") then
+                    table.insert(coins, handle)
+                else
+                    -- Если Handle нет, берём любую BasePart
+                    for _, part in pairs(obj:GetChildren()) do
+                        if part:IsA("BasePart") then
+                            table.insert(coins, part)
+                            break
+                        end
+                    end
+                end
+            elseif obj:IsA("BasePart") then
+                -- Если это сама часть
+                table.insert(coins, obj)
+            end
         end
     end
-    return nil
+    
+    return coins
 end
 
 -- ===== ПОИСК БЛИЖАЙШЕЙ МОНЕТЫ =====
-local function getClosestCoin()
-    local map = getMap()
-    if not map then return nil end
-    
-    local coinContainer = map:FindFirstChild("CoinContainer")
-    if not coinContainer then return nil end
-    
+local function findNearestCoin()
     local character = LocalPlayer.Character
     if not character then return nil end
     
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
     
-    local coins = {}
-    for _, child in pairs(coinContainer:GetChildren()) do
-        if child:IsA("Model") and child.Name == "Coin" then
-            table.insert(coins, child)
-        end
-    end
+    local rootPos = root.Position
+    local coins = getAllCoins()
     
     if #coins == 0 then return nil end
     
-    local closest = nil
-    local closestDist = math.huge
+    local nearest = nil
+    local nearestDist = math.huge
     
     for _, coin in pairs(coins) do
-        local pos = coin:GetPivot().Position
-        local dist = (pos - root.Position).Magnitude
-        if dist < closestDist then
-            closestDist = dist
-            closest = coin
+        if coin and coin:IsA("BasePart") then
+            local dist = (coin.Position - rootPos).Magnitude
+            if dist < nearestDist then
+                nearestDist = dist
+                nearest = coin
+            end
         end
     end
     
-    return closest, closestDist
+    return nearest, nearestDist
 end
 
--- ===== ТЕЛЕПОРТ К МОНЕТЕ =====
+-- ===== ТЕЛЕПОРТ =====
 local function teleportToCoin(coin)
     local character = LocalPlayer.Character
     if not character then return false end
@@ -74,7 +87,7 @@ local function teleportToCoin(coin)
         return false
     end
     
-    local pos = coin:GetPivot().Position
+    local pos = coin.Position
     root.CFrame = CFrame.new(pos + Vector3.new(0, TELEPORT_OFFSET, 0))
     
     lastCollect = tick()
@@ -83,7 +96,7 @@ local function teleportToCoin(coin)
     return true
 end
 
--- ===== СОЗДАЁМ GUI =====
+-- ===== GUI =====
 local function createGUI()
     local ScreenGui = Instance.new("ScreenGui")
     local Frame = Instance.new("Frame")
@@ -137,12 +150,9 @@ end
 
 -- ===== ОСНОВНОЙ ЦИКЛ =====
 local function main()
-    print("[SWILL] Запуск авто-сбора монет в MM2")
+    print("[SWILL] Запуск авто-сбора монет (универсальный поиск)")
     
-    -- Создаём GUI
-    local gui = createGUI()
-    
-    print("[SWILL] Начинаю сбор монет!")
+    createGUI()
     
     while running do
         task.wait(0.1)
@@ -159,19 +169,16 @@ local function main()
             continue
         end
         
-        local coin = getClosestCoin()
-        if not coin then
-            task.wait(1)
-            continue
+        local coin = findNearestCoin()
+        if coin then
+            teleportToCoin(coin)
+        else
+            -- Если монет нет, просто ждём
+            task.wait(0.5)
         end
-        
-        teleportToCoin(coin)
     end
-    
-    print("[SWILL] Всего собрано: " .. collected .. " монет")
 end
 
--- ===== ЗАПУСК =====
 task.spawn(main)
 
 print("[SWILL] Скрипт загружен. Нажми X на GUI для остановки.")
