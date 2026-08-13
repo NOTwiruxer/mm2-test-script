@@ -1,11 +1,8 @@
 --[[
-    MM2 COIN FARM v2 - УМНЫЙ СБОР
-    - Поиск ближайшей монеты
-    - Подлёт к ней
-    - Сбор без касания
-    - Переход к следующей
-    - Ноклип + полёт под картой
-    - GUI + хоткей F1
+    MM2 COIN FARM v3 - С РЕГУЛИРОВКОЙ ВЫСОТЫ
+    - Подбирает оптимальную высоту под карту
+    - Ползунок для ручной настройки
+    - Визуальный индикатор
 ]]
 
 local Players = game:GetService("Players")
@@ -16,12 +13,12 @@ local player = Players.LocalPlayer
 -- ===== НАСТРОЙКИ =====
 local config = {
     enabled = false,
-    underMapOffset = Vector3.new(0, -35, 0),  -- Смещение под карту
-    collectionDistance = 8,                    -- Дистанция сбора (подлетаем к монете)
-    flySpeed = 50,                            -- Скорость полёта
-    updateInterval = 0.1,                     -- Интервал обновления целей
+    underMapOffset = Vector3.new(0, -8, 0),  -- СТАРТОВАЯ ВЫСОТА (теперь -8, а не -35)
+    collectionDistance = 10,                  -- Радиус сбора
+    flySpeed = 50,
     toggleKey = Enum.KeyCode.F1,
-    useUnderMap = true,                       -- Летать под картой (true) или над (false)
+    useUnderMap = true,
+    heightStep = 1,                          -- Шаг изменения высоты
 }
 
 -- ===== ПЕРЕМЕННЫЕ =====
@@ -30,11 +27,9 @@ local humanoid = nil
 local rootPart = nil
 local noclipParts = {}
 local isFarming = false
-local targetCoin = nil
-local currentTarget = nil
-local flyConnection = nil
 local collectConnection = nil
 local coinCount = 0
+local currentHeight = -8  -- Текущая высота под картой
 
 -- ===== ПОЛУЧЕНИЕ ПЕРСОНАЖА =====
 local function getCharacter()
@@ -67,7 +62,7 @@ local function disableNoclip()
     noclipParts = {}
 end
 
--- ===== ПОИСК ВСЕХ МОНЕТ НА КАРТЕ =====
+-- ===== ПОИСК МОНЕТ =====
 local function findCoins()
     local coins = {}
     for _, obj in ipairs(workspace:GetDescendants()) do
@@ -76,7 +71,6 @@ local function findCoins()
             if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") then
                 table.insert(coins, obj)
             elseif obj:FindFirstChild("ClickDetector") then
-                -- Некоторые монеты имеют ClickDetector
                 table.insert(coins, obj)
             elseif obj:FindFirstChild("TouchEvent") or obj:FindFirstChild("CollectEvent") then
                 table.insert(coins, obj)
@@ -89,7 +83,6 @@ end
 -- ===== ПОИСК БЛИЖАЙШЕЙ МОНЕТЫ =====
 local function findClosestCoin()
     if not rootPart then return nil end
-    
     local coins = findCoins()
     if #coins == 0 then return nil end
     
@@ -106,31 +99,28 @@ local function findClosestCoin()
             end
         end
     end
-    
     return closest, closestDist
 end
 
--- ===== ПОДЛЁТ К МОНЕТЕ =====
+-- ===== ПОДЛЁТ К МОНЕТЕ (С УЧЁТОМ ВЫСОТЫ) =====
 local function moveToCoin(coin)
     if not rootPart or not coin or not coin.Parent then return false end
     
     local coinPos = coin.Position
     local targetPos = coinPos
     
-    -- Если летим под картой, добавляем смещение
     if config.useUnderMap then
-        targetPos = coinPos + config.underMapOffset
+        -- Используем текущую высоту
+        targetPos = Vector3.new(coinPos.X, coinPos.Y + currentHeight, coinPos.Z)
     end
     
     local currentPos = rootPart.Position
     local distance = (targetPos - currentPos).Magnitude
     
-    -- Если уже близко — не двигаемся
     if distance < config.collectionDistance then
         return true
     end
     
-    -- Плавный полёт к цели
     local direction = (targetPos - currentPos).Unit
     local speed = config.flySpeed * 0.5
     local newPos = currentPos + direction * speed
@@ -141,15 +131,12 @@ local function moveToCoin(coin)
     return false
 end
 
--- ===== СБОР МОНЕТЫ (БЕЗ КАСАНИЯ) =====
+-- ===== СБОР МОНЕТЫ =====
 local function collectCoin(coin)
     if not coin or not coin.Parent then return false end
     
     local success = false
-    
-    -- Пытаемся собрать разными способами
     pcall(function()
-        -- Способ 1: ClickDetector
         local clickDet = coin:FindFirstChild("ClickDetector")
         if clickDet and clickDet:IsA("ClickDetector") then
             clickDet:FireClick(player.Mouse)
@@ -157,7 +144,6 @@ local function collectCoin(coin)
             return
         end
         
-        -- Способ 2: RemoteEvent
         local remote = coin:FindFirstChild("RemoteEvent") or coin:FindFirstChild("CollectEvent")
         if remote and remote:IsA("RemoteEvent") then
             remote:FireServer(player)
@@ -165,7 +151,6 @@ local function collectCoin(coin)
             return
         end
         
-        -- Способ 3: Эмуляция касания
         local fakePart = Instance.new("Part")
         fakePart.CanCollide = false
         fakePart.Transparency = 1
@@ -173,74 +158,82 @@ local function collectCoin(coin)
         fakePart.Position = coin.Position + Vector3.new(0, 1, 0)
         fakePart.Parent = workspace
         
-        -- Вызываем событие Touched
         if coin.Touched then
             coin.Touched:Fire(fakePart)
             success = true
         end
         
-        -- Способ 4: Если монета имеет функцию Collect
         local collectFunc = coin:FindFirstChild("Collect")
         if collectFunc and typeof(collectFunc) == "function" then
             collectFunc(player)
             success = true
         end
         
-        -- Удаляем фейк
         game:GetService("Debris"):AddItem(fakePart, 0.05)
         
-        -- Способ 5: Телепорт монеты к игроку (если ничего не работает)
         if not success then
-            coin.Position = rootPart.Position + Vector3.new(0, -5, 0)
+            coin.Position = rootPart.Position + Vector3.new(0, -3, 0)
             success = true
         end
     end)
     
     if success then
         coinCount = coinCount + 1
-        print("[MM2 Farm] 🪙 Монета собрана! Всего: " .. coinCount)
         return true
     end
-    
     return false
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ СБОРА =====
+-- ===== ОСНОВНОЙ ЦИКЛ =====
 local function farmingLoop()
     if not rootPart then return end
     
-    -- 1. Находим ближайшую монету
     local closest, dist = findClosestCoin()
     
     if not closest then
-        -- Если монет нет, просто двигаемся под картой
         if config.useUnderMap then
             local time = tick()
             local x = math.sin(time * 0.3) * 20
             local z = math.cos(time * 0.4) * 20
-            local targetPos = rootPart.Position + Vector3.new(x, 0, z) + config.underMapOffset
+            local targetPos = rootPart.Position + Vector3.new(x, 0, z)
+            targetPos = Vector3.new(targetPos.X, targetPos.Y + currentHeight, targetPos.Z)
             rootPart.CFrame = CFrame.new(targetPos)
         end
         return
     end
     
-    -- 2. Если монета далеко — летим к ней
     if dist > config.collectionDistance then
         moveToCoin(closest)
         return
     end
     
-    -- 3. Если монета близко — собираем
     if dist <= config.collectionDistance then
-        local collected = collectCoin(closest)
-        if collected then
-            -- Небольшая задержка после сбора
-            task.wait(0.05)
-        end
+        collectCoin(closest)
+        task.wait(0.05)
     end
 end
 
--- ===== ВКЛЮЧЕНИЕ ФАРМА =====
+-- ===== УПРАВЛЕНИЕ ВЫСОТОЙ =====
+local function changeHeight(delta)
+    currentHeight = currentHeight + delta
+    -- Ограничиваем, чтобы не улететь слишком далеко
+    if currentHeight > 0 then currentHeight = 0 end
+    if currentHeight < -30 then currentHeight = -30 end
+    config.underMapOffset = Vector3.new(0, currentHeight, 0)
+    
+    -- Обновляем GUI
+    local gui = player.PlayerGui:FindFirstChild("MM2FarmGUI")
+    if gui then
+        local heightLabel = gui.Frame:FindFirstChild("HeightLabel")
+        if heightLabel then
+            heightLabel.Text = "Высота: " .. currentHeight
+        end
+    end
+    
+    print("[MM2 Farm] Высота изменена на: " .. currentHeight)
+end
+
+-- ===== ВКЛЮЧЕНИЕ =====
 local function startFarming()
     if isFarming then return end
     if not getCharacter() then
@@ -250,11 +243,8 @@ local function startFarming()
     
     isFarming = true
     config.enabled = true
-    
-    -- Включаем ноклип
     enableNoclip()
     
-    -- Запускаем основной цикл
     if collectConnection then collectConnection:Disconnect() end
     collectConnection = RunService.Heartbeat:Connect(function()
         if isFarming and rootPart then
@@ -263,15 +253,12 @@ local function startFarming()
     end)
     
     print("[MM2 Farm] ✅ АВТОФАРМ ВКЛЮЧЁН")
-    print("[MM2 Farm] 🔹 Ноклип: ВКЛ")
-    print("[MM2 Farm] 🔹 Режим: Умный сбор (подлёт к ближайшей монете)")
-    print("[MM2 Farm] 🔹 Смещение под карту: " .. tostring(config.underMapOffset))
+    print("[MM2 Farm] 🔹 Текущая высота: " .. currentHeight)
 end
 
--- ===== ВЫКЛЮЧЕНИЕ ФАРМА =====
+-- ===== ВЫКЛЮЧЕНИЕ =====
 local function stopFarming()
     if not isFarming then return end
-    
     isFarming = false
     config.enabled = false
     
@@ -281,11 +268,8 @@ local function stopFarming()
     end
     
     disableNoclip()
-    targetCoin = nil
-    currentTarget = nil
-    
     print("[MM2 Farm] ❌ АВТОФАРМ ВЫКЛЮЧЁН")
-    print("[MM2 Farm] 📊 Всего собрано: " .. coinCount .. " монет")
+    print("[MM2 Farm] 📊 Собрано: " .. coinCount .. " монет")
 end
 
 -- ===== ПЕРЕКЛЮЧЕНИЕ =====
@@ -297,7 +281,7 @@ local function toggleFarming()
     end
 end
 
--- ===== GUI =====
+-- ===== GUI С УПРАВЛЕНИЕМ ВЫСОТОЙ =====
 local function createGUI()
     if player.PlayerGui:FindFirstChild("MM2FarmGUI") then
         player.PlayerGui.MM2FarmGUI:Destroy()
@@ -309,7 +293,7 @@ local function createGUI()
     screenGui.ResetOnSpawn = false
     
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 240, 0, 140)
+    frame.Size = UDim2.new(0, 260, 0, 200)
     frame.Position = UDim2.new(0, 10, 0, 10)
     frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
     frame.BackgroundTransparency = 0.1
@@ -318,16 +302,18 @@ local function createGUI()
     frame.Draggable = true
     frame.Parent = screenGui
     
+    -- Заголовок
     local title = Instance.new("TextLabel")
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "🪙 MM2 SMART FARM"
+    title.Text = " MM2 SMART FARM v3"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
     title.Parent = frame
     
+    -- Статус
     local statusLabel = Instance.new("TextLabel")
     statusLabel.Size = UDim2.new(1, 0, 0, 22)
     statusLabel.Position = UDim2.new(0, 0, 0, 32)
@@ -339,20 +325,59 @@ local function createGUI()
     statusLabel.Name = "StatusLabel"
     statusLabel.Parent = frame
     
+    -- Статистика
     local statsLabel = Instance.new("TextLabel")
     statsLabel.Size = UDim2.new(1, 0, 0, 18)
     statsLabel.Position = UDim2.new(0, 0, 0, 56)
     statsLabel.BackgroundTransparency = 1
-    statsLabel.Text = "🪙 Собрано: 0"
+    statsLabel.Text = " Собрано: 0"
     statsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
     statsLabel.TextScaled = true
     statsLabel.Font = Enum.Font.Gotham
     statsLabel.Name = "StatsLabel"
     statsLabel.Parent = frame
     
+    -- Высота
+    local heightLabel = Instance.new("TextLabel")
+    heightLabel.Size = UDim2.new(1, 0, 0, 18)
+    heightLabel.Position = UDim2.new(0, 0, 0, 76)
+    heightLabel.BackgroundTransparency = 1
+    heightLabel.Text = "Высота: " .. currentHeight
+    heightLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+    heightLabel.TextScaled = true
+    heightLabel.Font = Enum.Font.Gotham
+    heightLabel.Name = "HeightLabel"
+    heightLabel.Parent = frame
+    
+    -- Кнопки управления высотой
+    local upBtn = Instance.new("TextButton")
+    upBtn.Size = UDim2.new(0.3, 0, 0, 25)
+    upBtn.Position = UDim2.new(0.05, 0, 0, 98)
+    upBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
+    upBtn.Text = "▲ +1"
+    upBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    upBtn.TextScaled = true
+    upBtn.Font = Enum.Font.GothamBold
+    upBtn.BorderSizePixel = 0
+    upBtn.Name = "UpBtn"
+    upBtn.Parent = frame
+    
+    local downBtn = Instance.new("TextButton")
+    downBtn.Size = UDim2.new(0.3, 0, 0, 25)
+    downBtn.Position = UDim2.new(0.65, 0, 0, 98)
+    downBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 0)
+    downBtn.Text = "▼ -1"
+    downBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    downBtn.TextScaled = true
+    downBtn.Font = Enum.Font.GothamBold
+    downBtn.BorderSizePixel = 0
+    downBtn.Name = "DownBtn"
+    downBtn.Parent = frame
+    
+    -- Кнопка включения
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Size = UDim2.new(0.8, 0, 0, 32)
-    toggleBtn.Position = UDim2.new(0.1, 0, 0, 82)
+    toggleBtn.Position = UDim2.new(0.1, 0, 0, 135)
     toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
     toggleBtn.Text = "🟢 ВКЛЮЧИТЬ (F1)"
     toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -362,10 +387,12 @@ local function createGUI()
     toggleBtn.Name = "ToggleButton"
     toggleBtn.Parent = frame
     
+    -- Обновление UI
     local function updateUI()
         local status = screenGui.Frame.StatusLabel
         local btn = screenGui.Frame.ToggleButton
         local stats = screenGui.Frame.StatsLabel
+        local height = screenGui.Frame.HeightLabel
         
         if isFarming then
             status.Text = "🟢 ВКЛЮЧЁН"
@@ -379,28 +406,38 @@ local function createGUI()
             btn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
         end
         
-        stats.Text = "🪙 Собрано: " .. coinCount
+        stats.Text = " Собрано: " .. coinCount
+        height.Text = "Высота: " .. currentHeight
     end
     
+    -- Обработчики кнопок
     toggleBtn.MouseButton1Click:Connect(function()
         toggleFarming()
         updateUI()
     end)
     
-    -- Обновление статистики каждую секунду
+    upBtn.MouseButton1Click:Connect(function()
+        changeHeight(1)
+        updateUI()
+    end)
+    
+    downBtn.MouseButton1Click:Connect(function()
+        changeHeight(-1)
+        updateUI()
+    end)
+    
+    -- Автообновление статистики
     spawn(function()
         while screenGui and screenGui.Parent do
             task.wait(1)
             local stats = screenGui:FindFirstChild("Frame") and screenGui.Frame:FindFirstChild("StatsLabel")
             if stats then
-                stats.Text = "🪙 Собрано: " .. coinCount
+                stats.Text = " Собрано: " .. coinCount
             end
         end
     end)
     
-    return {
-        updateUI = updateUI,
-    }
+    return { updateUI = updateUI }
 end
 
 -- ===== ГОРЯЧАЯ КЛАВИША =====
@@ -444,10 +481,9 @@ end)
 createGUI()
 
 print("========================================")
-print("  🪙 MM2 SMART COIN FARM v2")
+print("   MM2 SMART COIN FARM v3")
 print("  🔹 Нажми F1 для включения/выключения")
-print("  🔹 Бот подлетает к БЛИЖАЙШЕЙ монете")
-print("  🔹 Затем переходит к следующей")
-print("  🔹 Ноклип + полёт под картой")
-print("  🔹 GUI в левом верхнем углу")
+print("  🔹 Кнопки ▲▼ для регулировки высоты")
+print("  🔹 Подбери высоту, чтобы собирать монеты")
+print("  🔹 Рекомендуется: от -3 до -12")
 print("========================================")
