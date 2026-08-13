@@ -1,68 +1,86 @@
--- SWILL | Murder Mystery 2 - Оптимизированный сбор монет
--- Основан на анализе рабочих примеров
-
+-- SWILL | MM2 Coin Collector (на основе кода YARHM)
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
--- ===== НАСТРОЙКИ =====
-local CONFIG = {
-    TeleportCooldown = 0.15,        -- Задержка между телепортами
-    SearchRadius = 500,             -- Радиус для сбора монет
-}
+local collecting = true
+local collected = 0
 
--- ===== ОСНОВНАЯ ФУНКЦИЯ СБОРА =====
-local function collectCoins()
+local function getMap()
+    for _, child in pairs(workspace:GetChildren()) do
+        if child:FindFirstChild("CoinContainer") then
+            return child
+        end
+    end
+    return nil
+end
+
+local function getClosestCoin()
+    local map = getMap()
+    if not map then return nil end
+    
+    local coinContainer = map:FindFirstChild("CoinContainer")
+    if not coinContainer then return nil end
+    
     local character = LocalPlayer.Character
-    if not character then return end
-
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-
-    -- 1. Ищем все монеты в игровом мире.
-    -- Вместо жесткого пути (workspace.Map.Coins), ищем по имени "CoinContainer" или "Coins" [citation:1][citation:2]
-    local coins = {}
-    for _, v in pairs(workspace:GetDescendants()) do
-        -- Проверяем, что объект — это модель монеты, и она существует
-        if v:IsA("Model") and v.Name == "Coin" and v:FindFirstChild("Handle") then
-            -- Дополнительная проверка: монета прозрачна, если она уже собрана
-            local handle = v.Handle
-            if handle.Transparency < 1 then
-                table.insert(coins, handle)
+    if not character then return nil end
+    
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    
+    local coins = coinContainer:GetChildren()
+    if #coins == 0 then return nil end
+    
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, coin in pairs(coins) do
+        if coin:IsA("Model") then
+            local pos = coin:GetPivot().Position
+            local dist = (pos - root.Position).Magnitude
+            if dist < closestDist then
+                closestDist = dist
+                closest = coin
             end
         end
     end
-
-    -- 2. Находим ближайшую монету
-    local nearestCoin = nil
-    local shortestDist = CONFIG.SearchRadius
-    local rootPos = rootPart.Position
-
-    for _, coin in pairs(coins) do
-        local dist = (coin.Position - rootPos).Magnitude
-        if dist < shortestDist then
-            nearestCoin = coin
-            shortestDist = dist
-        end
-    end
-
-    -- 3. Телепортируемся к найденной монете
-    if nearestCoin then
-        -- Небольшое смещение вверх, чтобы избежать застревания в полу [citation:8]
-        local teleportPos = nearestCoin.Position + Vector3.new(0, 2, 0)
-        rootPart.CFrame = CFrame.new(teleportPos)
-        return true -- Успешно собрали
-    end
-
-    return false -- Монет в радиусе нет
+    
+    return closest, closestDist
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ =====
 print("[SWILL] Запуск сбора монет...")
-while true do
-    task.wait(CONFIG.TeleportCooldown)
+
+while collecting do
+    task.wait(0.1)
     
-    -- Проверяем, жив ли игрок, чтобы избежать ошибок
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-        collectCoins()
+    local character = LocalPlayer.Character
+    if not character then continue end
+    
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then continue end
+    
+    local coin = getClosestCoin()
+    if not coin then
+        print("[SWILL] Монет нет на карте")
+        continue
+    end
+    
+    local pos = coin:GetPivot().Position
+    local dist = (pos - root.Position).Magnitude
+    
+    -- Телепортируемся к монете
+    local tween = TweenService:Create(root, TweenInfo.new(dist * 0.05, Enum.EasingStyle.Linear), {
+        CFrame = CFrame.new(pos + Vector3.new(0, 2, 0))
+    })
+    tween:Play()
+    tween.Completed:Wait()
+    
+    task.wait(0.1)
+    coin:Destroy()
+    collected = collected + 1
+    
+    if collected % 10 == 0 then
+        print("[SWILL] Собрано монет: " .. collected)
     end
 end
