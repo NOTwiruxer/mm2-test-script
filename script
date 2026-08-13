@@ -1,22 +1,23 @@
 --[[
-    MM2 COIN FARM v4 - ПЛАВНЫЙ ПОЛЁТ + ОПТИМИЗАЦИЯ
-    - Реальный полёт (BodyVelocity + BodyGyro)
-    - Поиск монет только после сбора
-    - Нет лагов
-    - Регулировка высоты
+    MM2 COIN FARM v5 - НОКЛИП ИСПРАВЛЕН + ОПТИМИЗАЦИЯ
+    - Ноклип работает всегда
+    - Поиск монет ТОЛЬКО при сборе (не каждый кадр)
+    - Плавный полёт
+    - Минимум нагрузки
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local CollectionService = game:GetService("CollectionService")
 local player = Players.LocalPlayer
 
 -- ===== НАСТРОЙКИ =====
 local config = {
     enabled = false,
-    heightOffset = -6,                       -- Высота под картой (регулируй)
-    collectionDistance = 8,                  -- Дистанция сбора
-    flySpeed = 40,                           -- Скорость полёта
+    heightOffset = -6,
+    collectionDistance = 8,
+    flySpeed = 40,
     toggleKey = Enum.KeyCode.F1,
 }
 
@@ -25,50 +26,79 @@ local character = nil
 local rootPart = nil
 local humanoid = nil
 local isFarming = false
-local isCollecting = false                  -- Флаг: сейчас идёт сбор
-local currentTarget = nil
+local isCollecting = false
 local coinCount = 0
 local noclipParts = {}
-
--- ===== ТЕЛО ДЛЯ ФИЗИКИ =====
 local bodyVelocity = nil
 local bodyGyro = nil
+local currentTarget = nil
+local nextSearchTime = 0
+local searchCooldown = 0.3 -- Поиск монет не чаще чем раз в 0.3 сек
+
+-- ===== ФУНКЦИЯ НОКЛИПА (РАБОТАЕТ ВСЕГДА) =====
+local function applyNoclip()
+    if not character then return end
+    
+    -- Отключаем коллизию у ВСЕХ частей персонажа
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    -- Сохраняем части для восстановления
+    noclipParts = {}
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            table.insert(noclipParts, part)
+        end
+    end
+end
+
+local function removeNoclip()
+    for _, part in ipairs(noclipParts) do
+        if part and part.Parent then
+            pcall(function()
+                part.CanCollide = true
+            end)
+        end
+    end
+    noclipParts = {}
+end
 
 -- ===== ПОЛУЧЕНИЕ ПЕРСОНАЖА =====
 local function getCharacter()
     character = player.Character
     if character then
-        humanoid = character:FindFirstChild("Humanoid")
         rootPart = character:FindFirstChild("HumanoidRootPart")
+        humanoid = character:FindFirstChild("Humanoid")
         if humanoid then
             humanoid.PlatformStand = true
+        end
+        -- Применяем ноклип сразу
+        if isFarming then
+            applyNoclip()
         end
     end
     return character ~= nil
 end
 
--- ===== СОЗДАНИЕ ФИЗИКИ ПОЛЁТА =====
+-- ===== ФИЗИКА ПОЛЁТА =====
 local function createFlightPhysics()
     if not rootPart then return end
+    destroyFlightPhysics()
     
-    -- Удаляем старую физику
-    if bodyVelocity then bodyVelocity:Destroy() end
-    if bodyGyro then bodyGyro:Destroy() end
-    
-    -- BodyVelocity для движения
     bodyVelocity = Instance.new("BodyVelocity")
     bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
     bodyVelocity.Velocity = Vector3.new(0, 0, 0)
     bodyVelocity.Parent = rootPart
     
-    -- BodyGyro для стабилизации
     bodyGyro = Instance.new("BodyGyro")
     bodyGyro.MaxTorque = Vector3.new(4000, 4000, 4000)
     bodyGyro.CFrame = rootPart.CFrame
     bodyGyro.Parent = rootPart
 end
 
--- ===== УДАЛЕНИЕ ФИЗИКИ =====
 local function destroyFlightPhysics()
     if bodyVelocity then
         bodyVelocity:Destroy()
@@ -83,44 +113,37 @@ local function destroyFlightPhysics()
     end
 end
 
--- ===== НОКЛИП =====
-local function enableNoclip()
-    if not character then return end
-    noclipParts = {}
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-            table.insert(noclipParts, part)
+-- ===== ПОИСК МОНЕТ (ОПТИМИЗИРОВАННЫЙ) =====
+local function findCoins()
+    local coins = {}
+    -- Используем CollectionService для быстрого поиска
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Parent then
+            local name = obj.Name:lower()
+            if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") then
+                table.insert(coins, obj)
+            end
         end
     end
+    return coins
 end
 
-local function disableNoclip()
-    for _, part in ipairs(noclipParts) do
-        if part and part.Parent then
-            part.CanCollide = true
-        end
-    end
-    noclipParts = {}
-end
-
--- ===== ПОИСК БЛИЖАЙШЕЙ МОНЕТЫ (ОДИН РАЗ) =====
 local function findClosestCoin()
     if not rootPart then return nil end
+    
+    local coins = findCoins()
+    if #coins == 0 then return nil end
     
     local closest = nil
     local closestDist = math.huge
     local rootPos = rootPart.Position
     
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and obj.Parent then
-            local name = obj.Name:lower()
-            if name:find("coin") or name:find("money") or name:find("gold") or name:find("cash") then
-                local dist = (obj.Position - rootPos).Magnitude
-                if dist < closestDist then
-                    closestDist = dist
-                    closest = obj
-                end
+    for _, coin in ipairs(coins) do
+        if coin and coin.Parent then
+            local dist = (coin.Position - rootPos).Magnitude
+            if dist < closestDist then
+                closestDist = dist
+                closest = coin
             end
         end
     end
@@ -128,7 +151,7 @@ local function findClosestCoin()
     return closest, closestDist
 end
 
--- ===== ПОДЛЁТ К МОНЕТЕ (ПЛАВНЫЙ) =====
+-- ===== ПОДЛЁТ =====
 local function flyToTarget(target)
     if not rootPart or not target or not target.Parent then return false end
     
@@ -136,20 +159,14 @@ local function flyToTarget(target)
     local currentPos = rootPart.Position
     local distance = (targetPos - currentPos).Magnitude
     
-    -- Если уже рядом — собираем
     if distance < config.collectionDistance then
         return true
     end
     
-    -- Плавный полёт через BodyVelocity
     local direction = (targetPos - currentPos).Unit
-    local speed = config.flySpeed
-    
     if bodyVelocity then
-        bodyVelocity.Velocity = direction * speed
+        bodyVelocity.Velocity = direction * config.flySpeed
     end
-    
-    -- Стабилизация
     if bodyGyro then
         bodyGyro.CFrame = CFrame.new(rootPart.Position, targetPos)
     end
@@ -163,7 +180,7 @@ local function collectCoin(coin)
     
     local success = false
     pcall(function()
-        -- ClickDetector
+        -- Способ 1: ClickDetector
         local clickDet = coin:FindFirstChild("ClickDetector")
         if clickDet and clickDet:IsA("ClickDetector") then
             clickDet:FireClick(player.Mouse)
@@ -171,7 +188,7 @@ local function collectCoin(coin)
             return
         end
         
-        -- RemoteEvent
+        -- Способ 2: RemoteEvent
         local remote = coin:FindFirstChild("RemoteEvent") or coin:FindFirstChild("CollectEvent")
         if remote and remote:IsA("RemoteEvent") then
             remote:FireServer(player)
@@ -179,7 +196,7 @@ local function collectCoin(coin)
             return
         end
         
-        -- Эмуляция касания
+        -- Способ 3: Эмуляция касания
         local fakePart = Instance.new("Part")
         fakePart.CanCollide = false
         fakePart.Transparency = 1
@@ -207,48 +224,50 @@ local function collectCoin(coin)
     return false
 end
 
--- ===== ОСНОВНОЙ ЦИКЛ (ВЫЗЫВАЕТСЯ ТОЛЬКО ПОСЛЕ СБОРА) =====
+-- ===== ОСНОВНОЙ ЦИКЛ (ВЫЗЫВАЕТСЯ РЕДКО) =====
 local function farmingLoop()
     if not rootPart or not isFarming or isCollecting then return end
     
     isCollecting = true
     
-    -- 1. Находим ближайшую монету
+    -- Поиск монеты (с кд, чтобы не спамить)
+    local now = tick()
+    if now - nextSearchTime < searchCooldown then
+        isCollecting = false
+        return
+    end
+    nextSearchTime = now
+    
     local target, dist = findClosestCoin()
     
     if not target then
-        -- Нет монет — летим в случайную точку под картой
+        -- Нет монет — летим в случайную точку
         local randomPos = Vector3.new(
             math.random(-50, 50),
             config.heightOffset,
             math.random(-50, 50)
         )
         if bodyVelocity then
-            bodyVelocity.Velocity = (randomPos - rootPart.Position).Unit * config.flySpeed * 0.5
+            bodyVelocity.Velocity = (randomPos - rootPart.Position).Unit * config.flySpeed * 0.3
         end
         isCollecting = false
         return
     end
     
-    -- 2. Летим к монете
+    -- Летим к монете
     local arrived = flyToTarget(target)
-    
     if not arrived then
-        -- Ещё летим
         isCollecting = false
         return
     end
     
-    -- 3. Собираем монету
+    -- Собираем
     local collected = collectCoin(target)
-    
     if collected then
-        print("[MM2 Farm] 🪙 +1 монета (всего: " .. coinCount .. ")")
-        -- Небольшая задержка перед поиском следующей
+        print("[MM2 Farm] 🪙 +1 (" .. coinCount .. ")")
         task.wait(0.1)
     end
     
-    -- 4. Завершаем цикл — следующий вызов найдёт новую цель
     isCollecting = false
 end
 
@@ -261,17 +280,16 @@ local function startFarming()
     end
     
     isFarming = true
-    enableNoclip()
+    applyNoclip()
     createFlightPhysics()
     
-    -- Запускаем цикл сбора (Heartbeat)
     RunService.Heartbeat:Connect(function()
         if isFarming and rootPart then
             farmingLoop()
         end
     end)
     
-    print("[MM2 Farm] ✅ АВТОФАРМ ВКЛЮЧЁН")
+    print("[MM2 Farm] ✅ ВКЛЮЧЁН")
     print("[MM2 Farm] 🔹 Высота: " .. config.heightOffset)
 end
 
@@ -281,12 +299,11 @@ local function stopFarming()
     
     isFarming = false
     isCollecting = false
-    
     destroyFlightPhysics()
-    disableNoclip()
+    removeNoclip()
     
-    print("[MM2 Farm] ❌ АВТОФАРМ ВЫКЛЮЧЁН")
-    print("[MM2 Farm] 📊 Всего собрано: " .. coinCount .. " монет")
+    print("[MM2 Farm] ❌ ВЫКЛЮЧЁН")
+    print("[MM2 Farm] 📊 Собрано: " .. coinCount)
 end
 
 -- ===== ПЕРЕКЛЮЧЕНИЕ =====
@@ -319,18 +336,16 @@ local function createGUI()
     frame.Draggable = true
     frame.Parent = screenGui
     
-    -- Заголовок
     local title = Instance.new("TextLabel")
     title.Size = UDim2.new(1, 0, 0, 30)
     title.Position = UDim2.new(0, 0, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = " MM2 FARM v4"
+    title.Text = " MM2 FARM v5"
     title.TextColor3 = Color3.fromRGB(255, 215, 0)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
     title.Parent = frame
     
-    -- Статус
     local statusLabel = Instance.new("TextLabel")
     statusLabel.Size = UDim2.new(1, 0, 0, 22)
     statusLabel.Position = UDim2.new(0, 0, 0, 32)
@@ -342,7 +357,6 @@ local function createGUI()
     statusLabel.Name = "StatusLabel"
     statusLabel.Parent = frame
     
-    -- Статистика
     local statsLabel = Instance.new("TextLabel")
     statsLabel.Size = UDim2.new(1, 0, 0, 18)
     statsLabel.Position = UDim2.new(0, 0, 0, 56)
@@ -354,7 +368,6 @@ local function createGUI()
     statsLabel.Name = "StatsLabel"
     statsLabel.Parent = frame
     
-    -- Высота
     local heightLabel = Instance.new("TextLabel")
     heightLabel.Size = UDim2.new(1, 0, 0, 18)
     heightLabel.Position = UDim2.new(0, 0, 0, 76)
@@ -366,7 +379,6 @@ local function createGUI()
     heightLabel.Name = "HeightLabel"
     heightLabel.Parent = frame
     
-    -- Кнопки высоты
     local upBtn = Instance.new("TextButton")
     upBtn.Size = UDim2.new(0.3, 0, 0, 25)
     upBtn.Position = UDim2.new(0.05, 0, 0, 98)
@@ -389,7 +401,6 @@ local function createGUI()
     downBtn.BorderSizePixel = 0
     downBtn.Parent = frame
     
-    -- Кнопка включения
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Size = UDim2.new(0.8, 0, 0, 32)
     toggleBtn.Position = UDim2.new(0.1, 0, 0, 135)
@@ -401,7 +412,6 @@ local function createGUI()
     toggleBtn.BorderSizePixel = 0
     toggleBtn.Parent = frame
     
-    -- Обновление UI
     local function updateUI()
         local status = screenGui.Frame.StatusLabel
         local btn = screenGui.Frame.ToggleButton
@@ -424,7 +434,6 @@ local function createGUI()
         height.Text = "Высота: " .. config.heightOffset
     end
     
-    -- Обработчики
     toggleBtn.MouseButton1Click:Connect(function()
         toggleFarming()
         updateUI()
@@ -434,17 +443,14 @@ local function createGUI()
         config.heightOffset = config.heightOffset + 1
         if config.heightOffset > 0 then config.heightOffset = 0 end
         updateUI()
-        print("[MM2 Farm] Высота: " .. config.heightOffset)
     end)
     
     downBtn.MouseButton1Click:Connect(function()
         config.heightOffset = config.heightOffset - 1
         if config.heightOffset < -25 then config.heightOffset = -25 end
         updateUI()
-        print("[MM2 Farm] Высота: " .. config.heightOffset)
     end)
     
-    -- Автообновление
     spawn(function()
         while screenGui and screenGui.Parent do
             task.wait(1)
@@ -484,14 +490,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- ===== РЕСПАУН =====
+-- ===== ОБРАБОТКА РЕСПАУНА =====
 player.CharacterAdded:Connect(function(newChar)
     character = newChar
     rootPart = newChar:FindFirstChild("HumanoidRootPart")
     humanoid = newChar:FindFirstChild("Humanoid")
     if isFarming then
         task.wait(0.5)
-        enableNoclip()
+        applyNoclip()
         createFlightPhysics()
     end
 end)
@@ -500,9 +506,8 @@ end)
 createGUI()
 
 print("========================================")
-print("   MM2 COIN FARM v4 - ПЛАВНЫЙ ПОЛЁТ")
-print("  🔹 Нажми F1 для включения")
-print("  🔹 Кнопки ▲▼ для высоты")
-print("  🔹 Сбор без лагов")
-print("  🔹 Подбери высоту (рекомендуется -5..-10)")
+print("   MM2 FARM v5 - НОКЛИП + ОПТИМИЗАЦИЯ")
+print("  🔹 F1 - вкл/выкл")
+print("  🔹 ▲▼ - высота")
+print("  🔹 Поиск монет с задержкой (нет лагов)")
 print("========================================")
